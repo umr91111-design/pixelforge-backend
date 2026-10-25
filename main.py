@@ -76,10 +76,12 @@ async def trace_image(file: UploadFile = File(...)):
             },
         )
 
-    except Exception:
+        except Exception as e:
+        print(f"VTracer conversion error: {e!r}")
         raise HTTPException(
             status_code=422,
-            detail="Could not convert this image. Try another image.",
+            detail=f"Conversion failed: {e!s}",
+        
         )
 
     finally:
