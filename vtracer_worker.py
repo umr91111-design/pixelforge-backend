@@ -8,18 +8,38 @@ import vtracer
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Missing image format.", file=sys.stderr)
+    if len(sys.argv) != 3:
+        print("Missing image format or tracing mode.", file=sys.stderr)
         return 2
 
     image_format = sys.argv[1].lower()
-    extensions = {"png": ".png", "jpg": ".jpg", "webp": ".webp"}
+    selected_mode = sys.argv[2].lower()
+
+    extensions = {
+        "png": ".png",
+        "jpg": ".jpg",
+        "webp": ".webp",
+    }
+
+    modes = {
+        "color": "color",
+        "binary": "binary",
+        "black-white": "binary",
+        "black_white": "binary",
+        "bw": "binary",
+    }
 
     if image_format not in extensions:
         print("Unsupported image format.", file=sys.stderr)
         return 2
 
+    if selected_mode not in modes:
+        print("Unsupported tracing mode.", file=sys.stderr)
+        return 2
+
+    colormode = modes[selected_mode]
     image_data = sys.stdin.buffer.read()
+
     if not image_data:
         print("No image data received.", file=sys.stderr)
         return 2
@@ -33,9 +53,11 @@ def main():
         with open(input_path, "wb") as image_file:
             image_file.write(image_data)
 
-        print("Starting file-based VTracer conversion.", file=sys.stderr)
-
-        vtracer.convert_image_to_svg_py(input_path, output_path)
+        vtracer.convert_image_to_svg_py(
+            input_path,
+            output_path,
+            colormode=colormode,
+        )
 
         with open(output_path, "rb") as svg_file:
             svg_data = svg_file.read()
@@ -56,4 +78,3 @@ if __name__ == "__main__":
     except Exception:
         traceback.print_exc(file=sys.stderr)
         raise SystemExit(1)
-
