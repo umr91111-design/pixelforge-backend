@@ -104,9 +104,11 @@ async def trace_image(file: UploadFile = File(...)):
 
         if result.returncode != 0:
             logger.error(
-                "VTracer worker failed: %s",
-                result.stderr.decode("utf-8", errors="replace")[-3000:],
-            )
+    "VTracer worker failed: returncode=%s stdout=%r stderr=%r",
+    result.returncode,
+    result.stdout[:500],
+    result.stderr[:3000],
+)
             raise HTTPException(
                 status_code=500,
                 detail="Image conversion failed. Please try a simpler image.",
