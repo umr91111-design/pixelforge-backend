@@ -81,8 +81,7 @@ async def trace_image(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=422,
             detail=f"Conversion failed: {e!s}",
-        
-        )
+        ) 
 
     finally:
         await file.close()
