@@ -16,8 +16,8 @@ app = FastAPI(title="PixelForge AI API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://playful-squirrel-c30122.netlify.app",
         "https://capable-chebakia-c33932.netlify.app",
+        "https://playful-squirrel-c30122.netlify.app",
     ],
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
@@ -36,10 +36,7 @@ ALLOWED_TYPES = {
 
 @app.get("/")
 def home():
-    return {
-        "name": "PixelForge AI API",
-        "status": "running",
-    }
+    return {"name": "PixelForge AI API", "status": "running"}
 
 
 @app.get("/api/health")
@@ -77,7 +74,7 @@ async def trace_image(file: UploadFile = File(...)):
                 if image.format != expected_format:
                     raise HTTPException(
                         status_code=400,
-                        detail="The image contents do not match the file type.",
+                        detail="Image contents do not match the file type.",
                     )
 
                 width, height = image.size
@@ -85,18 +82,18 @@ async def trace_image(file: UploadFile = File(...)):
                 if width * height > MAX_PIXELS:
                     raise HTTPException(
                         status_code=400,
-                        detail="Image dimensions are too large. Use an image with at most 4 million pixels.",
+                        detail="Image dimensions must not exceed 4 million pixels.",
                     )
 
                 image.load()
 
         except HTTPException:
             raise
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
-            logger.warning("Image validation failed: %s", e)
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            logger.warning("Image validation failed: %s", exc)
             raise HTTPException(
                 status_code=400,
-                detail="This image is invalid or damaged. Try another PNG, JPG, or WebP image.",
+                detail="Invalid or damaged image. Try another PNG, JPG, or WebP.",
             )
 
         logger.info(
@@ -107,15 +104,19 @@ async def trace_image(file: UploadFile = File(...)):
             height,
         )
 
+        logger.info("DEBUG: Entering VTracer conversion")
+
         svg = vtracer.convert_raw_image_to_svg(
             data,
             img_format=image_format,
         )
 
+        logger.info("DEBUG: Exited VTracer conversion")
+
         if isinstance(svg, bytes):
             svg = svg.decode("utf-8")
 
-        if not svg.lstrip().startswith("<?xml") and "<svg" not in svg[:500]:
+        if "<svg" not in svg[:1000]:
             raise ValueError("VTracer did not return valid SVG content")
 
         logger.info("VTracer conversion completed successfully")
@@ -141,4 +142,6 @@ async def trace_image(file: UploadFile = File(...)):
         await file.close()
 
 
+        
                 
+            
