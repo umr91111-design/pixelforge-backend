@@ -1,7 +1,4 @@
 
-import io
-import os
-
 import vtracer
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +13,7 @@ app.add_middleware(
         "https://capable-chebakia-c33932.netlify.app",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -40,23 +37,27 @@ def health():
 
 @app.post("/api/trace")
 async def trace_image(file: UploadFile = File(...)):
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="Please upload a PNG, JPG, or WebP image.",
-        )
-
-    data = await file.read(MAX_FILE_SIZE + 1)
-    if not data:
-        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
-
-    if len(data) > MAX_FILE_SIZE:
-        raise HTTPException(
-            status_code=413,
-            detail="Image must be smaller than 5 MB.",
-        )
-
     try:
+        if file.content_type not in ALLOWED_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Please upload a PNG, JPG, or WebP image.",
+            )
+
+        data = await file.read(MAX_FILE_SIZE + 1)
+
+        if not data:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded file is empty.",
+            )
+
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Image must be smaller than 5 MB.",
+            )
+
         image_format = {
             "image/png": "png",
             "image/jpeg": "jpg",
@@ -76,13 +77,13 @@ async def trace_image(file: UploadFile = File(...)):
             },
         )
 
-        except Exception as e:
+    except HTTPException:
+        raise
+    except Exception as e:
         print(f"VTracer conversion error: {e!r}")
         raise HTTPException(
             status_code=422,
             detail=f"Conversion failed: {e!s}",
-        ) 
-
+        )
     finally:
         await file.close()
-
