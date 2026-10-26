@@ -3,6 +3,7 @@ import io
 import logging
 import subprocess
 import sys
+import os
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pixelforge")
 
 app = FastAPI(title="PixelForge API")
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKER_PATH = os.path.join(BASE_DIR, "vtracer_worker.py")
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,7 +58,7 @@ async def trace_image(
             detail="Please upload a PNG, JPG, or WebP image.",
         )
 
-    modes = {
+    mode_aliases = {
         "color": "color",
         "binary": "binary",
         "black-white": "binary",
@@ -62,7 +66,7 @@ async def trace_image(
         "bw": "binary",
     }
 
-    selected_mode = modes.get(mode.lower())
+    selected_mode = mode_aliases.get(mode.strip().lower())
     if not selected_mode:
         raise HTTPException(
             status_code=400,
@@ -105,55 +109,84 @@ async def trace_image(
         )
 
     logger.info(
-        "Tracing image: mode=%s format=%s dimensions=%sx%s",
-        selected_mode, image_format, width, height,
+        "Starting VTracer: mode=%s format=%s dimensions=%sx%s",
+        selected_mode,
+        image_format,
+        width,
+        height,
     )
 
     try:
         result = subprocess.run(
             [
                 sys.executable,
-                "vtracer_worker.py",
+                WORKER_PATH,
                 image_format,
                 selected_mode,
             ],
             input=data,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=30,
+            timeout=60,
             check=False,
+            cwd=BASE_DIR,
         )
 
         if result.returncode != 0:
             logger.error(
-                "VTracer failed: %s",
-                result.stderr.decode("utf-8", errors="replace")[:3000],
+                "VTracer worker failed: returncode=%s stdout=%r stderr=%r",
+                result.returncode,
+                result.stdout[:1000],
+                result.stderr[:3000],
             )
             raise HTTPException(
                 status_code=500,
-                detail="Image conversion failed. Please try a simpler image.",
+                detail="Image conversion failed. Check the Render logs for details.",
             )
 
         svg = result.stdout
 
-        if b"<svg" not in svg[:1000].lower():
-            logger.error("VTracer returned invalid SVG output.")
+        if b"<svg" not in svg[:2000].lower():
+            logger.error(
+                "Invalid SVG output: %r",
+                svg[:500],
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Conversion did not produce a valid SVG file.",
             )
 
+        logger.info(
+            "VTracer completed successfully: output=%s bytes mode=%s",
+            len(svg),
+            selected_mode,
+        )
+
         return Response(
             content=svg,
             media_type="image/svg+xml",
             headers={
-                "Content-Disposition": 'attachment; filename="pixelforge.svg"'
+                "Content-Disposition": 'attachment; filename="pixelforge.svg"',
+                "Cache-Control": "no-store",
             },
         )
 
     except subprocess.TimeoutExpired:
-        logger.error("VTracer conversion timed out.")
+        logger.exception("VTracer conversion timed out.")
         raise HTTPException(
             status_code=504,
             detail="Conversion took too long. Please try a smaller image.",
         )
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        logger.exception("Unexpected error during VTracer conversion.")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected conversion error occurred.",
+        )
+
+    finally:
+        await image.close()
