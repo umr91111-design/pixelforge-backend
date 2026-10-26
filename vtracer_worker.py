@@ -7,7 +7,7 @@ import vtracer
 
 def main():
     if len(sys.argv) != 3:
-        print("Missing image format or mode.", file=sys.stderr)
+        print("Missing image format or tracing mode.", file=sys.stderr)
         return 2
 
     image_format = sys.argv[1].lower()
@@ -27,28 +27,29 @@ def main():
         print("No image data received.", file=sys.stderr)
         return 2
 
-    print(
-        f"Starting raw-byte VTracer: format={image_format}, mode={mode}",
-        file=sys.stderr,
-        flush=True,
-    )
-
     try:
-        svg = vtracer.convert_raw_image_to_svg(
-            image_data,
-            img_format=image_format,
-            colormode=mode,
+        print(
+            f"Starting VTracer 1.0 API: mode={mode}, format={image_format}",
+            file=sys.stderr,
+            flush=True,
         )
 
-        if isinstance(svg, str):
-            svg = svg.encode("utf-8")
+        config = vtracer.Config()
 
-        if b"<svg" not in svg[:2000].lower():
+        if mode == "binary":
+            config = vtracer.Config.bw()
+
+        svg = config.convert_bytes(image_data, format=image_format)
+
+        if not isinstance(svg, str):
+            svg = str(svg)
+
+        if "<svg" not in svg[:2000].lower():
             print("VTracer returned invalid SVG output.", file=sys.stderr)
             return 1
 
-        sys.stdout.buffer.write(svg)
-        sys.stdout.buffer.flush()
+        sys.stdout.write(svg)
+        sys.stdout.flush()
 
         print("VTracer conversion completed.", file=sys.stderr, flush=True)
         return 0
