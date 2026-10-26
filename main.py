@@ -4,7 +4,7 @@ import logging
 import subprocess
 import sys
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
@@ -37,24 +37,45 @@ def health():
 
 
 @app.post("/api/trace")
-async def trace_image(file: UploadFile = File(...)):
+async def trace_image(
+    image: UploadFile = File(...),
+    mode: str = Form("color"),
+):
     allowed_types = {
         "image/png": "png",
         "image/jpeg": "jpg",
         "image/webp": "webp",
     }
 
-    image_format = allowed_types.get(file.content_type)
+    image_format = allowed_types.get(image.content_type)
     if not image_format:
         raise HTTPException(
             status_code=400,
             detail="Please upload a PNG, JPG, or WebP image.",
         )
 
-    data = await file.read()
+    modes = {
+        "color": "color",
+        "binary": "binary",
+        "black-white": "binary",
+        "black_white": "binary",
+        "bw": "binary",
+    }
+
+    selected_mode = modes.get(mode.lower())
+    if not selected_mode:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose Color Artwork or Black & White.",
+        )
+
+    data = await image.read()
 
     if not data:
-        raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is empty.",
+        )
 
     if len(data) > 5 * 1024 * 1024:
         raise HTTPException(
@@ -63,11 +84,11 @@ async def trace_image(file: UploadFile = File(...)):
         )
 
     try:
-        with Image.open(io.BytesIO(data)) as image:
-            image.verify()
+        with Image.open(io.BytesIO(data)) as img:
+            img.verify()
 
-        with Image.open(io.BytesIO(data)) as image:
-            width, height = image.size
+        with Image.open(io.BytesIO(data)) as img:
+            width, height = img.size
 
         if width * height > 4_000_000:
             raise HTTPException(
@@ -84,8 +105,8 @@ async def trace_image(file: UploadFile = File(...)):
         )
 
     logger.info(
-        "Starting isolated VTracer conversion: format=%s size=%s dimensions=%sx%s",
-        image_format, len(data), width, height,
+        "Tracing image: mode=%s format=%s dimensions=%sx%s",
+        selected_mode, image_format, width, height,
     )
 
     try:
@@ -94,6 +115,7 @@ async def trace_image(file: UploadFile = File(...)):
                 sys.executable,
                 "vtracer_worker.py",
                 image_format,
+                selected_mode,
             ],
             input=data,
             stdout=subprocess.PIPE,
@@ -104,11 +126,9 @@ async def trace_image(file: UploadFile = File(...)):
 
         if result.returncode != 0:
             logger.error(
-    "VTracer worker failed: returncode=%s stdout=%r stderr=%r",
-    result.returncode,
-    result.stdout[:500],
-    result.stderr[:3000],
-)
+                "VTracer failed: %s",
+                result.stderr.decode("utf-8", errors="replace")[:3000],
+            )
             raise HTTPException(
                 status_code=500,
                 detail="Image conversion failed. Please try a simpler image.",
@@ -116,14 +136,12 @@ async def trace_image(file: UploadFile = File(...)):
 
         svg = result.stdout
 
-        if not svg.strip().startswith(b"<"):
-            logger.error("VTracer worker returned invalid SVG output.")
+        if b"<svg" not in svg[:1000].lower():
+            logger.error("VTracer returned invalid SVG output.")
             raise HTTPException(
                 status_code=500,
                 detail="Conversion did not produce a valid SVG file.",
             )
-
-        logger.info("VTracer conversion completed: output=%s bytes", len(svg))
 
         return Response(
             content=svg,
@@ -134,11 +152,8 @@ async def trace_image(file: UploadFile = File(...)):
         )
 
     except subprocess.TimeoutExpired:
-        logger.error("VTracer worker timed out after 30 seconds.")
+        logger.error("VTracer conversion timed out.")
         raise HTTPException(
             status_code=504,
             detail="Conversion took too long. Please try a smaller image.",
         )
-
-
-            
