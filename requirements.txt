@@ -4,5 +4,4 @@ uvicorn[standard]
 vtracer==1.0.0a4
 python-multipart
 Pillow
-rembg[cpu]
 
