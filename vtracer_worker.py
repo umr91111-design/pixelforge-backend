@@ -1,17 +1,13 @@
 
-import io
 import sys
 import traceback
-import tempfile
-import os
 
 import vtracer
-from PIL import Image
 
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: worker.py IMAGE_FORMAT MODE", file=sys.stderr)
+        print("Missing image format or mode.", file=sys.stderr)
         return 2
 
     image_format = sys.argv[1].lower()
@@ -25,45 +21,36 @@ def main():
         print("Unsupported tracing mode.", file=sys.stderr)
         return 2
 
-    raw_data = sys.stdin.buffer.read()
-    if not raw_data:
+    image_data = sys.stdin.buffer.read()
+
+    if not image_data:
         print("No image data received.", file=sys.stderr)
         return 2
 
+    print(
+        f"Starting raw-byte VTracer: format={image_format}, mode={mode}",
+        file=sys.stderr,
+        flush=True,
+    )
+
     try:
-        with Image.open(io.BytesIO(raw_data)) as source:
-            source.load()
-            image = source.convert("RGB")
+        svg = vtracer.convert_raw_image_to_svg(
+            image_data,
+            img_format=image_format,
+            colormode=mode,
+        )
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            input_path = os.path.join(temp_dir, "input.png")
-            output_path = os.path.join(temp_dir, "output.svg")
+        if isinstance(svg, str):
+            svg = svg.encode("utf-8")
 
-            image.save(input_path, format="PNG")
-            image.close()
+        if b"<svg" not in svg[:2000].lower():
+            print("VTracer returned invalid SVG output.", file=sys.stderr)
+            return 1
 
-            print(
-                f"Tracing normalized PNG using mode={mode}",
-                file=sys.stderr,
-                flush=True,
-            )
+        sys.stdout.buffer.write(svg)
+        sys.stdout.buffer.flush()
 
-            vtracer.convert_image_to_svg_py(
-                input_path,
-                output_path,
-                colormode=mode,
-            )
-
-            with open(output_path, "rb") as svg_file:
-                svg_data = svg_file.read()
-
-            if b"<svg" not in svg_data[:2000].lower():
-                print("VTracer produced invalid SVG.", file=sys.stderr)
-                return 1
-
-            sys.stdout.buffer.write(svg_data)
-            sys.stdout.buffer.flush()
-
+        print("VTracer conversion completed.", file=sys.stderr, flush=True)
         return 0
 
     except Exception:
