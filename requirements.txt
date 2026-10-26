@@ -1,5 +1,6 @@
+
 fastapi
 uvicorn[standard]
-vtracer
+vtracer==1.0.0a4
 python-multipart
 Pillow
