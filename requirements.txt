@@ -1,7 +1,7 @@
-
 fastapi
 uvicorn[standard]
 vtracer==1.0.0a4
 python-multipart
 Pillow
-
+opencv-python-headless
+numpy
