@@ -11,6 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
+from shape_detector import detect_shapes 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pixelforge")
@@ -96,6 +97,63 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "pixelforge-api"}
+    @app.post("/api/detect-shapes")
+async def detect_image_shapes(image: UploadFile = File(...)):
+    try:
+        image_format = ALLOWED_TYPES.get(image.content_type or "")
+
+        if not image_format:
+            raise HTTPException(
+                status_code=400,
+                detail="Please upload a PNG, JPG, or WebP image.",
+            )
+
+        data = await image.read(MAX_UPLOAD_BYTES + 1)
+
+        if not data:
+            raise HTTPException(
+                status_code=400,
+                detail="The uploaded image is empty.",
+            )
+
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Image must be 5 MB or smaller.",
+            )
+
+        validate_image(data)
+
+        try:
+            await asyncio.wait_for(conversion_slots.acquire(), timeout=2)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=429,
+                detail="The service is busy. Please try again shortly.",
+            )
+
+        try:
+            result = await asyncio.to_thread(detect_shapes, data)
+        finally:
+            conversion_slots.release()
+
+        return result
+
+    except HTTPException:
+        raise
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to process this image.",
+        )
+    except Exception:
+        logger.exception("Shape detection failed.")
+        raise HTTPException(
+            status_code=500,
+            detail="Shape detection failed.",
+        )
+    finally:
+        await image.close()
 
 
 def validate_image(data: bytes):
