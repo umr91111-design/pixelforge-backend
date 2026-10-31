@@ -1,4 +1,3 @@
-
 import asyncio
 import io
 import logging
@@ -11,7 +10,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
-from shape_detector import detect_shapes 
+from shape_detector import detect_shapes
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pixelforge")
@@ -65,7 +65,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_headers(request, call_next):
-    # Reject oversized declared requests early.
     content_length = request.headers.get("content-length")
 
     if content_length:
@@ -74,7 +73,6 @@ async def security_headers(request, call_next):
         except ValueError:
             return Response("Invalid Content-Length", status_code=400)
 
-        # Multipart data includes extra bytes beyond the image itself.
         if size > MAX_UPLOAD_BYTES + 256 * 1024:
             return Response("Request too large", status_code=413)
 
@@ -84,7 +82,9 @@ async def security_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
-    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; frame-ancestors 'none'"
+    )
 
     return response
 
@@ -97,7 +97,44 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "pixelforge-api"}
-    @app.post("/api/detect-shapes")
+
+
+def validate_image(data: bytes):
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            if img.format not in {"PNG", "JPEG", "WEBP"}:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please upload a PNG, JPG, or WebP image.",
+                )
+
+            width, height = img.size
+
+            if width < 1 or height < 1 or width * height > MAX_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Image dimensions are too large. Please use a smaller image.",
+                )
+
+            img.verify()
+
+    except HTTPException:
+        raise
+    except (
+        UnidentifiedImageError,
+        OSError,
+        ValueError,
+        Image.DecompressionBombError,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is not a valid supported image.",
+        )
+
+    return width, height
+
+
+@app.post("/api/detect-shapes")
 async def detect_image_shapes(image: UploadFile = File(...)):
     try:
         image_format = ALLOWED_TYPES.get(image.content_type or "")
@@ -125,7 +162,10 @@ async def detect_image_shapes(image: UploadFile = File(...)):
         validate_image(data)
 
         try:
-            await asyncio.wait_for(conversion_slots.acquire(), timeout=2)
+            await asyncio.wait_for(
+                conversion_slots.acquire(),
+                timeout=2,
+            )
         except asyncio.TimeoutError:
             raise HTTPException(
                 status_code=429,
@@ -154,36 +194,6 @@ async def detect_image_shapes(image: UploadFile = File(...)):
         )
     finally:
         await image.close()
-
-
-def validate_image(data: bytes):
-    try:
-        with Image.open(io.BytesIO(data)) as img:
-            if img.format not in {"PNG", "JPEG", "WEBP"}:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Please upload a PNG, JPG, or WebP image.",
-                )
-
-            width, height = img.size
-
-            if width < 1 or height < 1 or width * height > MAX_PIXELS:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Image dimensions are too large. Please use a smaller image.",
-                )
-
-            img.verify()
-
-    except HTTPException:
-        raise
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded file is not a valid supported image.",
-        )
-
-    return width, height
 
 
 def run_worker(image_format: str, mode: str, data: bytes):
@@ -226,7 +236,6 @@ async def trace_image(
                 detail="Choose Color Artwork or Black & White.",
             )
 
-        # Read at most one byte beyond the limit.
         data = await image.read(MAX_UPLOAD_BYTES + 1)
 
         if not data:
@@ -251,7 +260,6 @@ async def trace_image(
             height,
         )
 
-        # Bound simultaneous conversions.
         try:
             await asyncio.wait_for(
                 conversion_slots.acquire(),
@@ -286,7 +294,6 @@ async def trace_image(
             conversion_slots.release()
 
         if result.returncode != 0:
-            # Do not log uploaded content or raw subprocess output.
             logger.error(
                 "VTracer failed with exit code %s",
                 result.returncode,
