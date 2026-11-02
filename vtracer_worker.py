@@ -1,4 +1,3 @@
-
 import sys
 import traceback
 
@@ -22,35 +21,29 @@ def main():
         return 2
 
     image_data = sys.stdin.buffer.read()
-
     if not image_data:
         print("No image data received.", file=sys.stderr)
         return 2
 
     try:
         print(
-            f"Starting VTracer 1.0 API: mode={mode}, format={image_format}",
+            f"Starting VTracer: mode={mode}, format={image_format}",
             file=sys.stderr,
             flush=True,
         )
 
-        config = vtracer.Config()
-
-        if mode == "binary":
-            config = vtracer.Config.bw()
-
+        config = vtracer.Config() if mode == "color" else vtracer.Config.bw()
         svg = config.convert_bytes(image_data, format=image_format)
 
         if not isinstance(svg, str):
             svg = str(svg)
 
-        if "<svg" not in svg[:2000].lower():
+        if "<svg" not in svg[:4000].lower():
             print("VTracer returned invalid SVG output.", file=sys.stderr)
             return 1
 
         sys.stdout.write(svg)
         sys.stdout.flush()
-
         print("VTracer conversion completed.", file=sys.stderr, flush=True)
         return 0
 
