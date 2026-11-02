@@ -56,7 +56,7 @@ app = FastAPI(
     ),
     version="1.1.0",
     docs_url="/docs",
-    redoc_url=None,
+    redoc_url="/redoc",
     openapi_url="/openapi.json",
 )
 # FastAPI currently defaults to OpenAPI 3.1. Set the advertised schema version
@@ -88,9 +88,22 @@ async def security_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Cache-Control"] = "no-store"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; frame-ancestors 'none'"
-    )
+    # FastAPI documentation pages need their Swagger UI / ReDoc CDN assets.
+    # Keep the restrictive policy on all API routes.
+    if request.url.path in {"/docs", "/redoc"}:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "img-src 'self' data: https://cdn.jsdelivr.net; "
+            "font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'"
+        )
+    else:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'"
+        )
     return response
 
 
