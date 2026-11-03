@@ -95,6 +95,25 @@ class TestBezierRefinement(unittest.TestCase):
         self.assertEqual(report["refined_corners"], 0)
         self.assertNotIn("C", result)
 
+    def test_shared_edge_is_preserved_between_adjacent_shapes(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg"
+             width="300" height="200"
+             viewBox="0 0 300 200">
+            <path d="M 0 0 L 100 0 L 200 20
+                     L 200 120 L 0 120 Z"
+                  fill="black"/>
+            <path d="M 200 20 L 300 20
+                     L 300 120 L 200 120 Z"
+                  fill="red"/>
+        </svg>
+        """
+
+        result, report = refine_bezier_paths(svg)
+
+        validate_and_inspect_svg(result)
+        self.assertIn("L 200,120", result)
+
 
 if __name__ == "__main__":
     unittest.main()
