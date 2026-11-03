@@ -1,28 +1,85 @@
+
 import sys
 import traceback
 
 import vtracer
+from lxml import etree
+
+
+ALLOWED_FORMATS = {"png", "jpg", "webp"}
+ALLOWED_MODES = {"color", "binary"}
+
+MAX_INPUT_BYTES = 5 * 1024 * 1024
+MAX_SVG_BYTES = 20 * 1024 * 1024
+
+
+def validate_svg(svg_text):
+    """Validate that VTracer returned a well-formed SVG document."""
+
+    if not isinstance(svg_text, str):
+        raise ValueError("VTracer output is not text.")
+
+    svg_bytes = svg_text.encode("utf-8")
+
+    if not svg_bytes:
+        raise ValueError("VTracer returned empty SVG output.")
+
+    if len(svg_bytes) > MAX_SVG_BYTES:
+        raise ValueError("Generated SVG exceeds the size limit.")
+
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        huge_tree=False,
+        recover=False,
+        remove_comments=False,
+    )
+
+    root = etree.fromstring(svg_bytes, parser=parser)
+
+    # Check the root element name, allowing SVG documents
+    # both with and without the standard SVG namespace.
+    root_name = etree.QName(root).localname.lower()
+
+    if root_name != "svg":
+        raise ValueError("VTracer output does not have an SVG root element.")
+
+    # Reject documents containing a document type declaration.
+    if root.getroottree().docinfo.doctype:
+        raise ValueError("SVG document type declarations are not allowed.")
+
+    return svg_text
 
 
 def main():
     if len(sys.argv) != 3:
-        print("Missing image format or tracing mode.", file=sys.stderr)
+        print(
+            "Missing image format or tracing mode.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
 
     image_format = sys.argv[1].lower()
     mode = sys.argv[2].lower()
 
-    if image_format not in {"png", "jpg", "webp"}:
-        print("Unsupported image format.", file=sys.stderr)
+    if image_format not in ALLOWED_FORMATS:
+        print("Unsupported image format.", file=sys.stderr, flush=True)
         return 2
 
-    if mode not in {"color", "binary"}:
-        print("Unsupported tracing mode.", file=sys.stderr)
+    if mode not in ALLOWED_MODES:
+        print("Unsupported tracing mode.", file=sys.stderr, flush=True)
         return 2
 
-    image_data = sys.stdin.buffer.read()
+    image_data = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+
     if not image_data:
-        print("No image data received.", file=sys.stderr)
+        print("No image data received.", file=sys.stderr, flush=True)
+        return 2
+
+    if len(image_data) > MAX_INPUT_BYTES:
+        print("Input image exceeds the size limit.", file=sys.stderr, flush=True)
         return 2
 
     try:
@@ -32,22 +89,43 @@ def main():
             flush=True,
         )
 
-        config = vtracer.Config() if mode == "color" else vtracer.Config.bw()
-        svg = config.convert_bytes(image_data, format=image_format)
+        if mode == "color":
+            config = vtracer.Config()
+        else:
+            config = vtracer.Config.bw()
 
-        if not isinstance(svg, str):
-            svg = str(svg)
+        svg_output = config.convert_bytes(
+            image_data,
+            format=image_format,
+        )
 
-        if "<svg" not in svg[:4000].lower():
-            print("VTracer returned invalid SVG output.", file=sys.stderr)
-            return 1
+        if isinstance(svg_output, bytes):
+            svg_text = svg_output.decode("utf-8")
+        elif isinstance(svg_output, str):
+            svg_text = svg_output
+        else:
+            raise ValueError("VTracer returned an unsupported output type.")
 
-        sys.stdout.write(svg)
+        svg_text = validate_svg(svg_text)
+
+        # stdout contains only the SVG document.
+        sys.stdout.write(svg_text)
         sys.stdout.flush()
-        print("VTracer conversion completed.", file=sys.stderr, flush=True)
+
+        print(
+            "VTracer conversion and SVG validation completed.",
+            file=sys.stderr,
+            flush=True,
+        )
+
         return 0
 
-    except Exception:
+    except Exception as error:
+        print(
+            f"VTracer conversion failed: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
         traceback.print_exc(file=sys.stderr)
         return 1
 
