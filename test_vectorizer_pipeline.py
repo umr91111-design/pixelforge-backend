@@ -6,9 +6,25 @@ from lxml import etree
 from svgpathtools import Line, Path
 
 from vectorizer_pipeline import (
+    MAX_SEGMENTS_PER_PATH,
     refine_bezier_paths,
     validate_and_inspect_svg,
 )
+
+
+def make_complex_path():
+    """Create a path exceeding the configured segment limit."""
+    segments = []
+
+    for index in range(MAX_SEGMENTS_PER_PATH + 1):
+        segments.append(
+            Line(
+                complex(index, 0),
+                complex(index + 1, 0),
+            )
+        )
+
+    return Path(*segments)
 
 
 class TestBezierRefinement(unittest.TestCase):
@@ -140,7 +156,6 @@ class TestBezierRefinement(unittest.TestCase):
 
         self.assertNotIn("C", paths["left"])
         self.assertNotIn("C", paths["right"])
-
         self.assertIn("C", paths["independent"])
 
     def test_shared_edge_is_detected_in_opposite_direction(self):
@@ -237,6 +252,46 @@ class TestSvgPathValidation(unittest.TestCase):
 
         self.assertEqual(report["refined_paths"], 0)
         self.assertEqual(report["invalid_geometry_paths"], 1)
+        self.assertEqual(report["skipped_paths"], 1)
+        self.assertNotIn("C", result)
+
+    def test_excessive_segments_are_skipped_during_inspection(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        complex_path = make_complex_path()
+
+        with patch(
+            "vectorizer_pipeline.parse_path",
+            return_value=complex_path,
+        ):
+            report = validate_and_inspect_svg(svg)
+
+        self.assertEqual(report["path_count"], 1)
+        self.assertEqual(report["inspected_paths"], 0)
+        self.assertEqual(report["skipped_paths"], 1)
+        self.assertEqual(report["invalid_paths"], 0)
+
+    def test_excessive_segments_are_skipped_during_refinement(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        complex_path = make_complex_path()
+
+        with patch(
+            "vectorizer_pipeline.parse_path",
+            return_value=complex_path,
+        ):
+            result, report = refine_bezier_paths(svg)
+
+        self.assertEqual(report["refined_paths"], 0)
+        self.assertEqual(report["refined_corners"], 0)
         self.assertEqual(report["skipped_paths"], 1)
         self.assertNotIn("C", result)
 
