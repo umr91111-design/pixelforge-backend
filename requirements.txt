@@ -1,3 +1,4 @@
+
 fastapi
 uvicorn[standard]
 python-multipart
@@ -5,3 +6,7 @@ Pillow
 numpy
 opencv-python-headless
 vtracer==1.0.0a4
+scikit-image
+shapely
+svgpathtools
+lxml
