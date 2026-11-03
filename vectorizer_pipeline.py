@@ -364,13 +364,16 @@ def _find_shared_edge_paths(
     Find closed line-only paths that share an identical
     straight-line edge with another path.
 
-    Path indices count SVG path elements in document order.
-    Edge direction does not matter.
+    Applies path, data-size, and segment limits before
+    performing shared-edge analysis.
     """
     edge_owners: dict[tuple, set[int]] = {}
     protected_paths: set[int] = set()
 
     path_index = 0
+    inspected_paths = 0
+    total_path_data_bytes = 0
+    total_segments = 0
 
     for element in root.iter():
         if not isinstance(element.tag, str):
@@ -382,13 +385,47 @@ def _find_shared_edge_paths(
         current_index = path_index
         path_index += 1
 
+        if inspected_paths >= MAX_PATHS_TO_INSPECT:
+            continue
+
+        inspected_paths += 1
+
         path_data = element.get("d", "")
 
         if not path_data:
             continue
 
+        path_size = len(path_data.encode("utf-8"))
+
+        if path_size > MAX_PATH_DATA_BYTES:
+            continue
+
+        if (
+            total_path_data_bytes + path_size
+            > MAX_TOTAL_PATH_DATA_BYTES
+        ):
+            continue
+
+        total_path_data_bytes += path_size
+
         try:
             path = parse_path(path_data)
+
+            if not _path_has_finite_coordinates(path):
+                continue
+
+            segment_count = len(path)
+
+            if segment_count > MAX_SEGMENTS_PER_PATH:
+                continue
+
+            if (
+                total_segments + segment_count
+                > MAX_TOTAL_SEGMENTS
+            ):
+                continue
+
+            total_segments += segment_count
 
             if not path.isclosed() or not path:
                 continue
@@ -405,9 +442,10 @@ def _find_shared_edge_paths(
                 if edge[0] == edge[1]:
                     continue
 
-                edge_owners.setdefault(edge, set()).add(
-                    current_index
-                )
+                edge_owners.setdefault(
+                    edge,
+                    set(),
+                ).add(current_index)
 
         except Exception:
             logger.exception(
