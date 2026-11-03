@@ -14,7 +14,10 @@ from PIL import Image, UnidentifiedImageError
 from lxml import etree
 
 from shape_detector import detect_shapes, refine_svg_with_primitives
-from vectorizer_pipeline import run_vectorizer_analysis
+from vectorizer_pipeline import (
+    refine_bezier_paths,
+    run_vectorizer_analysis,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -56,10 +59,10 @@ app = FastAPI(
     title="PixelForge API",
     description=(
         "PixelForge image vectorization API. Uses VTracer for vectorization, "
-        "OpenCV for primitive recognition, and CPU-based image and SVG "
-        "analysis. Topology-aware graph optimization is not yet implemented."
+        "OpenCV for primitive recognition, CPU-based image and SVG analysis, "
+        "and conservative Bézier path refinement."
     ),
-    version="1.2.0",
+    version="1.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -115,12 +118,7 @@ async def security_headers(request, call_next):
 
 
 def validate_svg(svg_text: str) -> bytes:
-    """
-    Validate SVG as well-formed XML.
-
-    Disables external entity resolution, network access and DTD loading.
-    Returns the original SVG encoded as UTF-8.
-    """
+    """Validate SVG XML without external entity or network access."""
 
     if not isinstance(svg_text, str) or not svg_text.strip():
         raise ValueError("SVG output is empty.")
@@ -173,11 +171,12 @@ async def health():
             "shapely_geometry_analysis": True,
             "svg_path_inspection": True,
             "svg_recognition_metadata": True,
+            "bezier_path_refinement": True,
+            "bezier_refinement_scope": "conservative closed line-only paths",
             "deep_learning_model": False,
             "gpu_required": False,
             "topology_aware_graph_optimizer": False,
             "shared_boundary_repair": False,
-            "bezier_path_refinement": False,
             "openapi": "/openapi.json",
         },
     }
@@ -211,13 +210,15 @@ async def features():
         "svg_analysis": {
             "xml_parser": "lxml",
             "path_inspection": "svgpathtools",
-            "changes_svg_geometry": False,
+            "changes_svg_geometry": True,
         },
         "geometry_refinement": {
-            "status": "recognition metadata and diagnostics",
+            "bezier_path_refinement": True,
+            "bezier_refinement_scope": (
+                "Conservative refinement of eligible closed line-only paths"
+            ),
             "topology_aware_shared_boundary_optimization": False,
             "gap_and_overlap_repair": False,
-            "bezier_path_refinement": False,
         },
         "developer_api": {
             "openapi": "/openapi.json",
@@ -323,7 +324,6 @@ async def detect_image_shapes(image: UploadFile = File(...)):
                 detect_shapes,
                 data,
             )
-
         finally:
             conversion_slots.release()
 
@@ -372,11 +372,7 @@ def run_worker(image_format: str, mode: str, data: bytes):
 
 
 def run_pipeline_analysis(data: bytes, svg_text: str):
-    """
-    Run CPU-based diagnostics after VTracer generates an SVG.
-
-    This function does not rewrite vector paths or repair topology.
-    """
+    """Run CPU-based diagnostics on the generated SVG."""
     return run_vectorizer_analysis(data, svg_text)
 
 
@@ -411,6 +407,12 @@ async def trace_image(
         started = time.monotonic()
         detected_shapes = []
         analysis_completed = False
+        bezier_stats = {
+            "refined_paths": 0,
+            "refined_corners": 0,
+            "skipped_paths": 0,
+        }
+        bezier_status = "disabled"
 
         try:
             # STEP 1: Run VTracer.
@@ -469,17 +471,15 @@ async def trace_image(
 
             try:
                 svg_text = svg_bytes.decode("utf-8")
-
             except UnicodeDecodeError as exc:
                 raise HTTPException(
                     status_code=500,
                     detail="Vectorizer returned invalid SVG encoding.",
                 ) from exc
 
-            # STEP 2: Validate the actual SVG XML.
+            # STEP 2: Validate VTracer output.
             try:
                 validate_svg(svg_text)
-
             except (ValueError, etree.XMLSyntaxError) as exc:
                 logger.exception("VTracer returned invalid SVG XML.")
 
@@ -487,6 +487,9 @@ async def trace_image(
                     status_code=500,
                     detail="Conversion did not produce a valid SVG file.",
                 ) from exc
+
+            # Keep a valid copy as a fallback.
+            original_svg = svg_text
 
             # STEP 3: Detect shapes with OpenCV.
             if recognize_primitives:
@@ -512,26 +515,21 @@ async def trace_image(
             # STEP 4: Add shape-recognition metadata.
             if refine_geometry and detected_shapes:
                 try:
-                    svg_text = await asyncio.to_thread(
+                    candidate_svg = await asyncio.to_thread(
                         refine_svg_with_primitives,
                         svg_text,
                         detected_shapes,
                     )
 
-                    # Check the SVG again after metadata processing.
-                    validate_svg(svg_text)
+                    validate_svg(candidate_svg)
+                    svg_text = candidate_svg
 
                 except Exception:
                     logger.exception(
                         "Recognition metadata failed; "
-                        "keeping the original VTracer SVG."
+                        "keeping the previous valid SVG."
                     )
-
-                    # Re-run the original VTracer output through validation.
-                    validate_svg(
-                        svg_bytes.decode("utf-8")
-                    )
-                    svg_text = svg_bytes.decode("utf-8")
+                    svg_text = original_svg
 
             # STEP 5: Run integrated CPU analysis.
             if refine_geometry:
@@ -564,7 +562,59 @@ async def trace_image(
                         "retaining the generated SVG."
                     )
 
-            # STEP 6: Final output validation.
+            # STEP 6: Apply conservative Bézier refinement.
+            if refine_geometry:
+                previous_valid_svg = svg_text
+
+                try:
+                    candidate_svg, candidate_stats = await asyncio.to_thread(
+                        refine_bezier_paths,
+                        svg_text,
+                    )
+
+                    # Never accept unvalidated refinement output.
+                    validate_svg(candidate_svg)
+
+                    if not isinstance(candidate_stats, dict):
+                        raise ValueError(
+                            "Bézier refinement returned invalid statistics."
+                        )
+
+                    bezier_stats = {
+                        "refined_paths": int(
+                            candidate_stats.get("refined_paths", 0)
+                        ),
+                        "refined_corners": int(
+                            candidate_stats.get("refined_corners", 0)
+                        ),
+                        "skipped_paths": int(
+                            candidate_stats.get("skipped_paths", 0)
+                        ),
+                    }
+
+                    svg_text = candidate_svg
+                    bezier_status = "completed"
+
+                    logger.info(
+                        (
+                            "Bézier refinement completed: "
+                            "paths=%s corners=%s skipped=%s"
+                        ),
+                        bezier_stats["refined_paths"],
+                        bezier_stats["refined_corners"],
+                        bezier_stats["skipped_paths"],
+                    )
+
+                except Exception:
+                    logger.exception(
+                        "Bézier refinement failed; "
+                        "keeping the previous valid SVG."
+                    )
+
+                    svg_text = previous_valid_svg
+                    bezier_status = "failed"
+
+            # STEP 7: Final output validation.
             final_svg = validate_svg(svg_text)
 
             elapsed = round(
@@ -574,12 +624,16 @@ async def trace_image(
 
             logger.info(
                 (
-                    "Vectorization completed: "
-                    "output=%s bytes shapes=%s analysis=%s elapsed=%ss"
+                    "Vectorization completed: output=%s bytes "
+                    "shapes=%s analysis=%s bezier=%s "
+                    "refined_paths=%s refined_corners=%s elapsed=%ss"
                 ),
                 len(final_svg),
                 len(detected_shapes),
                 analysis_completed,
+                bezier_status,
+                bezier_stats["refined_paths"],
+                bezier_stats["refined_corners"],
                 elapsed,
             )
 
@@ -604,6 +658,13 @@ async def trace_image(
                     ),
                     "X-PixelForge-Deep-Learning": "not-configured",
                     "X-PixelForge-CPU-Analysis": analysis_status,
+                    "X-PixelForge-Bezier-Refinement": bezier_status,
+                    "X-PixelForge-Bezier-Paths": str(
+                        bezier_stats["refined_paths"]
+                    ),
+                    "X-PixelForge-Bezier-Corners": str(
+                        bezier_stats["refined_corners"]
+                    ),
                 },
             )
 
