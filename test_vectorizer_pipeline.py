@@ -2,7 +2,6 @@
 import unittest
 
 from lxml import etree
-from svgpathtools import parse_path
 
 from vectorizer_pipeline import (
     refine_bezier_paths,
@@ -100,8 +99,8 @@ class TestBezierRefinement(unittest.TestCase):
     def test_shared_edge_paths_are_preserved_but_unrelated_path_is_refined(self):
         svg = """
         <svg xmlns="http://www.w3.org/2000/svg"
-             width="500" height="200"
-             viewBox="0 0 500 200">
+             width="700" height="200"
+             viewBox="0 0 700 200">
 
             <path id="left"
                   d="M 0 0 L 100 0 L 200 20
@@ -114,8 +113,8 @@ class TestBezierRefinement(unittest.TestCase):
                   fill="red"/>
 
             <path id="independent"
-                  d="M 450 0 L 470 0 L 490 20
-                     L 490 120 L 450 120 Z"
+                  d="M 450 0 L 550 0 L 643.97 34.2
+                     L 643.97 134.2 L 450 134.2 Z"
                   fill="blue"/>
         </svg>
         """
@@ -151,8 +150,8 @@ class TestBezierRefinement(unittest.TestCase):
                      L 200 120 L 0 120 Z"/>
 
             <path id="second"
-                  d="M 200 120 L 300 120 L 300 20
-                     L 200 20 Z"/>
+                  d="M 200 20 L 300 20 L 300 120
+                     L 200 120 Z"/>
         </svg>
         """
 
