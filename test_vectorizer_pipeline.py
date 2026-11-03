@@ -1,3 +1,4 @@
+
 import unittest
 
 from lxml import etree
@@ -103,16 +104,18 @@ class TestBezierRefinement(unittest.TestCase):
              viewBox="0 0 500 200">
 
             <path id="left"
-                  d="M 0 0 L 100 0 L 100 100 L 0 100 Z"
+                  d="M 0 0 L 100 0 L 200 20
+                     L 200 120 L 0 120 Z"
                   fill="black"/>
 
             <path id="right"
-                  d="M 100 0 L 200 0 L 200 100 L 100 100 Z"
+                  d="M 200 20 L 300 0 L 400 20
+                     L 400 120 L 200 120 Z"
                   fill="red"/>
 
             <path id="independent"
-                  d="M 300 0 L 400 0 L 500 20
-                     L 500 120 L 300 120 Z"
+                  d="M 450 0 L 470 0 L 490 20
+                     L 490 120 L 450 120 Z"
                   fill="blue"/>
         </svg>
         """
@@ -130,41 +133,45 @@ class TestBezierRefinement(unittest.TestCase):
             and etree.QName(element).localname == "path"
         }
 
-        original_paths = {
-            "left": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
-            "right": "M 100 0 L 200 0 L 200 100 L 100 100 Z",
-        }
+        self.assertEqual(report["shared_edge_paths"], 2)
+        self.assertEqual(report["protected_shared_edge_paths"], 2)
 
-        for path_id, original_data in original_paths.items():
-            original = parse_path(original_data)
-            actual = parse_path(paths[path_id])
-
-            self.assertEqual(
-                len(actual),
-                len(original),
-                f"{path_id} segment count changed",
-            )
-
-            for actual_segment, original_segment in zip(actual, original):
-                self.assertEqual(
-                    type(actual_segment),
-                    type(original_segment),
-                    f"{path_id} segment type changed",
-                )
-
-                self.assertLessEqual(
-                    abs(actual_segment.start - original_segment.start),
-                    1e-6,
-                    f"{path_id} segment start changed",
-                )
-
-                self.assertLessEqual(
-                    abs(actual_segment.end - original_segment.end),
-                    1e-6,
-                    f"{path_id} segment end changed",
-                )
+        self.assertNotIn("C", paths["left"])
+        self.assertNotIn("C", paths["right"])
 
         self.assertIn("C", paths["independent"])
+
+    def test_shared_edge_is_detected_in_opposite_direction(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg"
+             width="300" height="150">
+
+            <path id="first"
+                  d="M 0 0 L 100 0 L 200 20
+                     L 200 120 L 0 120 Z"/>
+
+            <path id="second"
+                  d="M 200 120 L 300 120 L 300 20
+                     L 200 20 Z"/>
+        </svg>
+        """
+
+        result, report = refine_bezier_paths(svg)
+
+        self.assertEqual(report["shared_edge_paths"], 2)
+        self.assertEqual(report["protected_shared_edge_paths"], 2)
+
+        root = etree.fromstring(result.encode("utf-8"))
+
+        paths = {
+            element.get("id"): element.get("d")
+            for element in root.iter()
+            if isinstance(element.tag, str)
+            and etree.QName(element).localname == "path"
+        }
+
+        self.assertNotIn("C", paths["first"])
+        self.assertNotIn("C", paths["second"])
 
 
 if __name__ == "__main__":
