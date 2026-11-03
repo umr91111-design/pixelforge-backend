@@ -282,12 +282,9 @@ def validate_and_inspect_svg(
         try:
             path = parse_path(path_data)
 
-            if not _path_has_finite_coordinates(path):
-                invalid_paths += 1
-                continue
-
             segment_count = len(path)
 
+            # Check resource limits before coordinate sampling.
             if segment_count > MAX_SEGMENTS_PER_PATH:
                 skipped_paths += 1
                 continue
@@ -297,6 +294,10 @@ def validate_and_inspect_svg(
                 > MAX_TOTAL_SEGMENTS
             ):
                 skipped_paths += 1
+                continue
+
+            if not _path_has_finite_coordinates(path):
+                invalid_paths += 1
                 continue
 
             path_length = float(path.length(error=1e-3))
@@ -411,11 +412,9 @@ def _find_shared_edge_paths(
         try:
             path = parse_path(path_data)
 
-            if not _path_has_finite_coordinates(path):
-                continue
-
             segment_count = len(path)
 
+            # Reject oversized paths before coordinate sampling.
             if segment_count > MAX_SEGMENTS_PER_PATH:
                 continue
 
@@ -423,6 +422,9 @@ def _find_shared_edge_paths(
                 total_segments + segment_count
                 > MAX_TOTAL_SEGMENTS
             ):
+                continue
+
+            if not _path_has_finite_coordinates(path):
                 continue
 
             total_segments += segment_count
@@ -632,13 +634,9 @@ def refine_bezier_paths(
         try:
             path = parse_path(path_data)
 
-            if not _path_has_finite_coordinates(path):
-                invalid_geometry_paths += 1
-                skipped_paths += 1
-                continue
-
             segment_count = len(path)
 
+            # Apply segment limits before coordinate sampling.
             if segment_count < 3:
                 skipped_paths += 1
                 continue
@@ -651,6 +649,11 @@ def refine_bezier_paths(
                 total_segments + segment_count
                 > MAX_TOTAL_SEGMENTS
             ):
+                skipped_paths += 1
+                continue
+
+            if not _path_has_finite_coordinates(path):
+                invalid_geometry_paths += 1
                 skipped_paths += 1
                 continue
 
@@ -834,4 +837,4 @@ def refine_bezier_paths(
         "shared_edge_paths": len(protected_paths),
         "protected_shared_edge_paths": protected_path_count,
         "method": "conservative_shared_edge_protected_smoothing",
-    }
+                             }
