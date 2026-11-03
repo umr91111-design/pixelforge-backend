@@ -175,6 +175,41 @@ def analyze_contour_geometry(
     }
 
 
+def _validate_svg_active_content(root: etree._Element) -> None:
+    """
+    Reject active or embedded content that should not be
+    present in generated artwork SVGs.
+    """
+    blocked_elements = {
+        "script",
+        "foreignobject",
+    }
+
+    for element in root.iter():
+        if not isinstance(element.tag, str):
+            continue
+
+        element_name = etree.QName(element).localname.lower()
+
+        if element_name in blocked_elements:
+            raise ValueError(
+                f"SVG contains a prohibited element: {element_name}."
+            )
+
+        for attribute_name in element.attrib:
+            attribute_local_name = (
+                etree.QName(attribute_name).localname.lower()
+            )
+
+            if (
+                attribute_local_name.startswith("on")
+                and len(attribute_local_name) > 2
+            ):
+                raise ValueError(
+                    "SVG contains a prohibited event-handler attribute."
+                )
+
+
 def _path_has_finite_coordinates(path: Path) -> bool:
     """Check that sampled points along every SVG segment are finite."""
     try:
@@ -198,17 +233,15 @@ def _path_has_finite_coordinates(path: Path) -> bool:
         return False
 
 
-def validate_and_inspect_svg(
-    svg_text: str,
-) -> dict[str, Any]:
-    """Securely parse SVG and inspect a bounded number of paths."""
+def _parse_svg_root(svg_text: str) -> etree._Element:
+    """Parse SVG XML and apply common document security checks."""
     if not isinstance(svg_text, str) or not svg_text.strip():
-        raise ValueError("SVG output is empty.")
+        raise ValueError("SVG input is empty.")
 
     encoded = svg_text.encode("utf-8")
 
     if len(encoded) > MAX_SVG_BYTES:
-        raise ValueError("SVG output exceeds the allowed size.")
+        raise ValueError("SVG exceeds the allowed size.")
 
     parser = etree.XMLParser(
         resolve_entities=False,
@@ -227,15 +260,24 @@ def validate_and_inspect_svg(
             )
 
     except etree.XMLSyntaxError as exc:
-        raise ValueError(
-            "Generated SVG is not valid XML."
-        ) from exc
+        raise ValueError("SVG is not valid XML.") from exc
 
     if not isinstance(root.tag, str):
         raise ValueError("SVG root element is invalid.")
 
     if etree.QName(root).localname.lower() != "svg":
-        raise ValueError("The generated document is not an SVG.")
+        raise ValueError("Document root is not SVG.")
+
+    _validate_svg_active_content(root)
+
+    return root
+
+
+def validate_and_inspect_svg(
+    svg_text: str,
+) -> dict[str, Any]:
+    """Securely parse SVG and inspect a bounded number of paths."""
+    root = _parse_svg_root(svg_text)
 
     svg_namespace = "http://www.w3.org/2000/svg"
 
@@ -281,10 +323,8 @@ def validate_and_inspect_svg(
 
         try:
             path = parse_path(path_data)
-
             segment_count = len(path)
 
-            # Check resource limits before coordinate sampling.
             if segment_count > MAX_SEGMENTS_PER_PATH:
                 skipped_paths += 1
                 continue
@@ -364,9 +404,6 @@ def _find_shared_edge_paths(
     """
     Find closed line-only paths that share an identical
     straight-line edge with another path.
-
-    Applies path, data-size, and segment limits before
-    performing shared-edge analysis.
     """
     edge_owners: dict[tuple, set[int]] = {}
     protected_paths: set[int] = set()
@@ -411,10 +448,8 @@ def _find_shared_edge_paths(
 
         try:
             path = parse_path(path_data)
-
             segment_count = len(path)
 
-            # Reject oversized paths before coordinate sampling.
             if segment_count > MAX_SEGMENTS_PER_PATH:
                 continue
 
@@ -462,17 +497,7 @@ def _find_shared_edge_paths(
 
 
 def _is_valid_closed_line_path(path: Path) -> bool:
-    """
-    Check whether a closed, line-only path forms valid geometry.
-
-    Reject:
-    - Open paths
-    - Curved paths
-    - Duplicate consecutive points
-    - Zero-length edges
-    - Non-finite coordinates
-    - Self-intersecting or otherwise invalid polygons
-    """
+    """Check whether a closed, line-only path forms valid geometry."""
     if not path or not path.isclosed():
         return False
 
@@ -532,13 +557,7 @@ def refine_bezier_paths(
 
     Invalid polygons and paths sharing an identical full
     straight-line edge are protected from smoothing.
-
-    Existing curves, open paths, and sharp corners
-    are preserved.
     """
-    if not isinstance(svg_text, str) or not svg_text.strip():
-        raise ValueError("SVG input is empty.")
-
     if not (
         0 < min_turn_degrees
         < max_turn_degrees
@@ -549,34 +568,7 @@ def refine_bezier_paths(
     if not 0 < trim_ratio <= 0.25:
         raise ValueError("Invalid trim ratio.")
 
-    encoded = svg_text.encode("utf-8")
-
-    if len(encoded) > MAX_SVG_BYTES:
-        raise ValueError("SVG exceeds the allowed size.")
-
-    parser = etree.XMLParser(
-        resolve_entities=False,
-        no_network=True,
-        load_dtd=False,
-        huge_tree=False,
-        recover=False,
-    )
-
-    try:
-        root = etree.fromstring(encoded, parser=parser)
-    except etree.XMLSyntaxError as exc:
-        raise ValueError("SVG is not valid XML.") from exc
-
-    if not isinstance(root.tag, str):
-        raise ValueError("SVG root element is invalid.")
-
-    if etree.QName(root).localname.lower() != "svg":
-        raise ValueError("Document root is not SVG.")
-
-    if root.getroottree().docinfo.doctype:
-        raise ValueError(
-            "SVG documents with DOCTYPE are not allowed."
-        )
+    root = _parse_svg_root(svg_text)
 
     protected_paths = _find_shared_edge_paths(root)
 
@@ -633,10 +625,8 @@ def refine_bezier_paths(
 
         try:
             path = parse_path(path_data)
-
             segment_count = len(path)
 
-            # Apply segment limits before coordinate sampling.
             if segment_count < 3:
                 skipped_paths += 1
                 continue
@@ -837,4 +827,4 @@ def refine_bezier_paths(
         "shared_edge_paths": len(protected_paths),
         "protected_shared_edge_paths": protected_path_count,
         "method": "conservative_shared_edge_protected_smoothing",
-                             }
+    }
