@@ -1,4 +1,3 @@
-
 import unittest
 
 from lxml import etree
@@ -94,6 +93,7 @@ class TestBezierRefinement(unittest.TestCase):
 
         self.assertEqual(report["refined_paths"], 0)
         self.assertEqual(report["refined_corners"], 0)
+        self.assertEqual(report["invalid_geometry_paths"], 1)
         self.assertNotIn("C", result)
 
     def test_shared_edge_paths_are_preserved_but_unrelated_path_is_refined(self):
