@@ -1,4 +1,3 @@
-
 """Unified CPU-only analysis and topology-aware SVG refinement pipeline."""
 
 from __future__ import annotations
@@ -394,6 +393,44 @@ def _find_shared_edge_paths(
     return protected_paths
 
 
+def _is_valid_closed_line_path(path: Path) -> bool:
+    """
+    Check whether a closed, line-only path forms a valid polygon.
+
+    Invalid polygons, including self-intersecting polygons,
+    must not be passed to Bézier smoothing.
+    """
+    if not path or not path.isclosed():
+        return False
+
+    if not all(
+        isinstance(segment, Line)
+        for segment in path
+    ):
+        return False
+
+    points = [
+        (segment.start.real, segment.start.imag)
+        for segment in path
+    ]
+
+    if len(points) < 3:
+        return False
+
+    try:
+        polygon = Polygon(points)
+
+        return (
+            not polygon.is_empty
+            and polygon.area > 0
+            and polygon.is_valid
+        )
+
+    except Exception:
+        logger.exception("Polygon validity check failed.")
+        return False
+
+
 def refine_bezier_paths(
     svg_text: str,
     max_turn_degrees: float = 30.0,
@@ -404,8 +441,8 @@ def refine_bezier_paths(
     Conservatively smooth shallow corners in closed,
     line-only SVG paths.
 
-    Paths sharing an identical full straight-line edge
-    are protected from smoothing.
+    Invalid polygons and paths sharing an identical full
+    straight-line edge are protected from smoothing.
 
     Existing curves, open paths, and sharp corners
     are preserved.
@@ -460,6 +497,7 @@ def refine_bezier_paths(
     skipped_paths = 0
     protected_path_count = 0
     inspected_paths = 0
+    invalid_geometry_paths = 0
     total_path_bytes = 0
     total_segments = 0
 
@@ -537,6 +575,12 @@ def refine_bezier_paths(
                 isinstance(segment, Line)
                 for segment in path
             ):
+                skipped_paths += 1
+                continue
+
+            # Reject invalid geometry before smoothing.
+            if not _is_valid_closed_line_path(path):
+                invalid_geometry_paths += 1
                 skipped_paths += 1
                 continue
 
@@ -700,6 +744,7 @@ def refine_bezier_paths(
         "refined_paths": refined_paths,
         "refined_corners": refined_corners,
         "skipped_paths": skipped_paths,
+        "invalid_geometry_paths": invalid_geometry_paths,
         "shared_edge_paths": len(protected_paths),
         "protected_shared_edge_paths": protected_path_count,
         "method": "conservative_shared_edge_protected_smoothing",
