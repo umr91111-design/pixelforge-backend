@@ -267,13 +267,17 @@ class TestSvgPathValidation(unittest.TestCase):
         with patch(
             "vectorizer_pipeline.parse_path",
             return_value=complex_path,
-        ):
+        ), patch(
+            "vectorizer_pipeline._path_has_finite_coordinates"
+        ) as coordinate_check:
+
             report = validate_and_inspect_svg(svg)
 
         self.assertEqual(report["path_count"], 1)
         self.assertEqual(report["inspected_paths"], 0)
         self.assertEqual(report["skipped_paths"], 1)
         self.assertEqual(report["invalid_paths"], 0)
+        coordinate_check.assert_not_called()
 
     def test_excessive_segments_are_skipped_during_refinement(self):
         svg = """
@@ -287,13 +291,17 @@ class TestSvgPathValidation(unittest.TestCase):
         with patch(
             "vectorizer_pipeline.parse_path",
             return_value=complex_path,
-        ):
+        ), patch(
+            "vectorizer_pipeline._path_has_finite_coordinates"
+        ) as coordinate_check:
+
             result, report = refine_bezier_paths(svg)
 
         self.assertEqual(report["refined_paths"], 0)
         self.assertEqual(report["refined_corners"], 0)
         self.assertEqual(report["skipped_paths"], 1)
         self.assertNotIn("C", result)
+        coordinate_check.assert_not_called()
 
 
 if __name__ == "__main__":
