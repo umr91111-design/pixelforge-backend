@@ -1,6 +1,8 @@
 
 import unittest
 
+from lxml import etree
+
 from vectorizer_pipeline import (
     refine_bezier_paths,
     validate_and_inspect_svg,
@@ -24,7 +26,6 @@ class TestBezierRefinement(unittest.TestCase):
 
         self.assertGreater(report["refined_paths"], 0)
         self.assertGreater(report["refined_corners"], 0)
-
         validate_and_inspect_svg(result)
         self.assertIn("C", result)
 
@@ -95,24 +96,54 @@ class TestBezierRefinement(unittest.TestCase):
         self.assertEqual(report["refined_corners"], 0)
         self.assertNotIn("C", result)
 
-    def test_shared_edge_is_preserved_between_adjacent_shapes(self):
+    def test_shared_edge_paths_are_preserved_but_unrelated_path_is_refined(self):
         svg = """
         <svg xmlns="http://www.w3.org/2000/svg"
-             width="300" height="200"
-             viewBox="0 0 300 200">
-            <path d="M 0 0 L 100 0 L 200 20
-                     L 200 120 L 0 120 Z"
+             width="500" height="200"
+             viewBox="0 0 500 200">
+
+            <path id="left"
+                  d="M 0 0 L 100 0 L 100 100 L 0 100 Z"
                   fill="black"/>
-            <path d="M 200 20 L 300 20
-                     L 300 120 L 200 120 Z"
+
+            <path id="right"
+                  d="M 100 0 L 200 0 L 200 100 L 100 100 Z"
                   fill="red"/>
+
+            <path id="independent"
+                  d="M 300 0 L 400 0 L 500 20
+                     L 500 120 L 300 120 Z"
+                  fill="blue"/>
         </svg>
         """
 
         result, report = refine_bezier_paths(svg)
 
         validate_and_inspect_svg(result)
-        self.assertIn("L 200.0,120.0", result)
+
+        parser = etree.XMLParser(
+            resolve_entities=False,
+            no_network=True,
+            load_dtd=False,
+        )
+        root = etree.fromstring(result.encode("utf-8"))
+
+        paths = {
+            element.get("id"): element.get("d")
+            for element in root.iter()
+            if isinstance(element.tag, str)
+            and etree.QName(element).localname == "path"
+        }
+
+        self.assertEqual(
+            paths["left"],
+            "M 0,0 L 100,0 L 100,100 L 0,100 L 0,0"
+        )
+        self.assertEqual(
+            paths["right"],
+            "M 100,0 L 200,0 L 200,100 L 100,100 L 100,0"
+        )
+        self.assertIn("C", paths["independent"])
 
 
 if __name__ == "__main__":
