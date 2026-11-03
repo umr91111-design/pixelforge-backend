@@ -233,15 +233,14 @@ class TestSvgPathValidation(unittest.TestCase):
     def test_non_finite_coordinates_are_not_refined(self):
         svg = """
         <svg xmlns="http://www.w3.org/2000/svg">
-            <path d="M 0 0 L 10 10 Z"/>
+            <path d="M 0 0 L 10 10 L 20 20 Z"/>
         </svg>
         """
 
         invalid_path = Path(
-            Line(
-                0 + 0j,
-                complex(float("nan"), 10),
-            )
+            Line(0 + 0j, 10 + 10j),
+            Line(10 + 10j, complex(float("nan"), 20)),
+            Line(complex(float("nan"), 20), 0 + 0j),
         )
 
         with patch(
