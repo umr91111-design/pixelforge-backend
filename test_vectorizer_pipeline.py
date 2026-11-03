@@ -1,7 +1,7 @@
-
 import unittest
 
 from lxml import etree
+from svgpathtools import parse_path
 
 from vectorizer_pipeline import (
     refine_bezier_paths,
@@ -121,11 +121,6 @@ class TestBezierRefinement(unittest.TestCase):
 
         validate_and_inspect_svg(result)
 
-        parser = etree.XMLParser(
-            resolve_entities=False,
-            no_network=True,
-            load_dtd=False,
-        )
         root = etree.fromstring(result.encode("utf-8"))
 
         paths = {
@@ -135,14 +130,40 @@ class TestBezierRefinement(unittest.TestCase):
             and etree.QName(element).localname == "path"
         }
 
-        self.assertEqual(
-            paths["left"],
-            "M 0,0 L 100,0 L 100,100 L 0,100 L 0,0"
-        )
-        self.assertEqual(
-            paths["right"],
-            "M 100,0 L 200,0 L 200,100 L 100,100 L 100,0"
-        )
+        original_paths = {
+            "left": "M 0 0 L 100 0 L 100 100 L 0 100 Z",
+            "right": "M 100 0 L 200 0 L 200 100 L 100 100 Z",
+        }
+
+        for path_id, original_data in original_paths.items():
+            original = parse_path(original_data)
+            actual = parse_path(paths[path_id])
+
+            self.assertEqual(
+                len(actual),
+                len(original),
+                f"{path_id} segment count changed",
+            )
+
+            for actual_segment, original_segment in zip(actual, original):
+                self.assertEqual(
+                    type(actual_segment),
+                    type(original_segment),
+                    f"{path_id} segment type changed",
+                )
+
+                self.assertLessEqual(
+                    abs(actual_segment.start - original_segment.start),
+                    1e-6,
+                    f"{path_id} segment start changed",
+                )
+
+                self.assertLessEqual(
+                    abs(actual_segment.end - original_segment.end),
+                    1e-6,
+                    f"{path_id} segment end changed",
+                )
+
         self.assertIn("C", paths["independent"])
 
 
