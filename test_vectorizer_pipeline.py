@@ -112,7 +112,7 @@ class TestBezierRefinement(unittest.TestCase):
         result, report = refine_bezier_paths(svg)
 
         validate_and_inspect_svg(result)
-        self.assertIn("L 200,120", result)
+        self.assertIn("L 200.0,120.0", result)
 
 
 if __name__ == "__main__":
