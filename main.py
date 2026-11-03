@@ -1,3 +1,4 @@
+
 import asyncio
 import io
 import logging
@@ -10,9 +11,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
+from lxml import etree
 
 from shape_detector import detect_shapes, refine_svg_with_primitives
 from vectorizer_pipeline import run_vectorizer_analysis
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pixelforge")
@@ -47,6 +50,7 @@ ALLOWED_ORIGINS = [
     "https://playful-squirrel-c30122.netlify.app",
     "https://umr91111-design.github.io",
 ]
+
 
 app = FastAPI(
     title="PixelForge API",
@@ -108,6 +112,42 @@ async def security_headers(request, call_next):
         )
 
     return response
+
+
+def validate_svg(svg_text: str) -> bytes:
+    """
+    Validate SVG as well-formed XML.
+
+    Disables external entity resolution, network access and DTD loading.
+    Returns the original SVG encoded as UTF-8.
+    """
+
+    if not isinstance(svg_text, str) or not svg_text.strip():
+        raise ValueError("SVG output is empty.")
+
+    svg_bytes = svg_text.encode("utf-8")
+
+    if len(svg_bytes) > MAX_SVG_BYTES:
+        raise ValueError("SVG output exceeds the size limit.")
+
+    parser = etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        load_dtd=False,
+        huge_tree=False,
+        recover=False,
+        remove_comments=False,
+    )
+
+    root = etree.fromstring(svg_bytes, parser=parser)
+
+    if etree.QName(root).localname.lower() != "svg":
+        raise ValueError("The document root is not an SVG element.")
+
+    if root.getroottree().docinfo.doctype:
+        raise ValueError("SVG document type declarations are not allowed.")
+
+    return svg_bytes
 
 
 @app.get("/")
@@ -197,7 +237,11 @@ def validate_image(data: bytes):
 
             width, height = img.size
 
-            if width < 1 or height < 1 or width * height > MAX_PIXELS:
+            if (
+                width < 1
+                or height < 1
+                or width * height > MAX_PIXELS
+            ):
                 raise HTTPException(
                     status_code=413,
                     detail=(
@@ -210,6 +254,7 @@ def validate_image(data: bytes):
 
     except HTTPException:
         raise
+
     except (
         UnidentifiedImageError,
         OSError,
@@ -258,6 +303,7 @@ async def acquire_slot():
             conversion_slots.acquire(),
             timeout=2,
         )
+
     except asyncio.TimeoutError as exc:
         raise HTTPException(
             status_code=429,
@@ -277,6 +323,7 @@ async def detect_image_shapes(image: UploadFile = File(...)):
                 detect_shapes,
                 data,
             )
+
         finally:
             conversion_slots.release()
 
@@ -326,7 +373,7 @@ def run_worker(image_format: str, mode: str, data: bytes):
 
 def run_pipeline_analysis(data: bytes, svg_text: str):
     """
-    Run CPU-based diagnostics after VTracer has generated an SVG.
+    Run CPU-based diagnostics after VTracer generates an SVG.
 
     This function does not rewrite vector paths or repair topology.
     """
@@ -363,6 +410,7 @@ async def trace_image(
 
         started = time.monotonic()
         detected_shapes = []
+        analysis_completed = False
 
         try:
             # STEP 1: Run VTracer.
@@ -428,15 +476,19 @@ async def trace_image(
                     detail="Vectorizer returned invalid SVG encoding.",
                 ) from exc
 
-            if "<svg" not in svg_text[:4000].lower():
-                logger.error("VTracer returned an invalid SVG response.")
+            # STEP 2: Validate the actual SVG XML.
+            try:
+                validate_svg(svg_text)
+
+            except (ValueError, etree.XMLSyntaxError) as exc:
+                logger.exception("VTracer returned invalid SVG XML.")
 
                 raise HTTPException(
                     status_code=500,
                     detail="Conversion did not produce a valid SVG file.",
-                )
+                ) from exc
 
-            # STEP 2: Detect shapes with OpenCV.
+            # STEP 3: Detect shapes with OpenCV.
             if recognize_primitives:
                 try:
                     detection = await asyncio.to_thread(
@@ -457,7 +509,7 @@ async def trace_image(
                         "keeping the original VTracer SVG."
                     )
 
-            # STEP 3: Add shape-recognition metadata.
+            # STEP 4: Add shape-recognition metadata.
             if refine_geometry and detected_shapes:
                 try:
                     svg_text = await asyncio.to_thread(
@@ -466,16 +518,22 @@ async def trace_image(
                         detected_shapes,
                     )
 
+                    # Check the SVG again after metadata processing.
+                    validate_svg(svg_text)
+
                 except Exception:
                     logger.exception(
                         "Recognition metadata failed; "
-                        "keeping the VTracer SVG."
+                        "keeping the original VTracer SVG."
                     )
 
-            # STEP 4: Run integrated CPU analysis.
-            #
-            # This inspects segmentation, contour geometry and SVG paths.
-            # It does not yet repair gaps, overlaps or shared boundaries.
+                    # Re-run the original VTracer output through validation.
+                    validate_svg(
+                        svg_bytes.decode("utf-8")
+                    )
+                    svg_text = svg_bytes.decode("utf-8")
+
+            # STEP 5: Run integrated CPU analysis.
             if refine_geometry:
                 try:
                     analysis = await asyncio.to_thread(
@@ -498,22 +556,16 @@ async def trace_image(
                         svg_analysis,
                     )
 
+                    analysis_completed = True
+
                 except Exception:
-                    # Diagnostics are optional. A failure must not discard
-                    # a valid SVG already generated by VTracer.
                     logger.exception(
                         "Pipeline analysis failed; "
                         "retaining the generated SVG."
                     )
 
-            # STEP 5: Final output checks.
-            final_svg = svg_text.encode("utf-8")
-
-            if not final_svg or len(final_svg) > MAX_SVG_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail="Generated SVG is too large after processing.",
-                )
+            # STEP 6: Final output validation.
+            final_svg = validate_svg(svg_text)
 
             elapsed = round(
                 time.monotonic() - started,
@@ -523,12 +575,20 @@ async def trace_image(
             logger.info(
                 (
                     "Vectorization completed: "
-                    "output=%s bytes shapes=%s elapsed=%ss"
+                    "output=%s bytes shapes=%s analysis=%s elapsed=%ss"
                 ),
                 len(final_svg),
                 len(detected_shapes),
+                analysis_completed,
                 elapsed,
             )
+
+            if not refine_geometry:
+                analysis_status = "disabled"
+            elif analysis_completed:
+                analysis_status = "completed"
+            else:
+                analysis_status = "failed"
 
             return Response(
                 content=final_svg,
@@ -543,9 +603,7 @@ async def trace_image(
                         len(detected_shapes)
                     ),
                     "X-PixelForge-Deep-Learning": "not-configured",
-                    "X-PixelForge-CPU-Analysis": (
-                        "completed" if refine_geometry else "disabled"
-                    ),
+                    "X-PixelForge-CPU-Analysis": analysis_status,
                 },
             )
 
