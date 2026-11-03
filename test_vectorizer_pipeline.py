@@ -1,6 +1,9 @@
+
 import unittest
+from unittest.mock import patch
 
 from lxml import etree
+from svgpathtools import Line, Path
 
 from vectorizer_pipeline import (
     refine_bezier_paths,
@@ -171,6 +174,71 @@ class TestBezierRefinement(unittest.TestCase):
 
         self.assertNotIn("C", paths["first"])
         self.assertNotIn("C", paths["second"])
+
+
+class TestSvgPathValidation(unittest.TestCase):
+
+    def test_malformed_path_data_is_counted_as_invalid(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path d="M 0 0 L 10"/>
+        </svg>
+        """
+
+        report = validate_and_inspect_svg(svg)
+
+        self.assertEqual(report["path_count"], 1)
+        self.assertEqual(report["invalid_paths"], 1)
+        self.assertEqual(report["inspected_paths"], 0)
+
+    def test_non_finite_coordinates_are_rejected_during_inspection(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        invalid_path = Path(
+            Line(
+                0 + 0j,
+                complex(float("nan"), 10),
+            )
+        )
+
+        with patch(
+            "vectorizer_pipeline.parse_path",
+            return_value=invalid_path,
+        ):
+            report = validate_and_inspect_svg(svg)
+
+        self.assertEqual(report["path_count"], 1)
+        self.assertEqual(report["invalid_paths"], 1)
+        self.assertEqual(report["inspected_paths"], 0)
+
+    def test_non_finite_coordinates_are_not_refined(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        invalid_path = Path(
+            Line(
+                0 + 0j,
+                complex(float("nan"), 10),
+            )
+        )
+
+        with patch(
+            "vectorizer_pipeline.parse_path",
+            return_value=invalid_path,
+        ):
+            result, report = refine_bezier_paths(svg)
+
+        self.assertEqual(report["refined_paths"], 0)
+        self.assertEqual(report["invalid_geometry_paths"], 1)
+        self.assertEqual(report["skipped_paths"], 1)
+        self.assertNotIn("C", result)
 
 
 if __name__ == "__main__":
