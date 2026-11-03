@@ -175,6 +175,29 @@ def analyze_contour_geometry(
     }
 
 
+def _path_has_finite_coordinates(path: Path) -> bool:
+    """Check that sampled points along every SVG segment are finite."""
+    try:
+        if not path:
+            return False
+
+        for segment in path:
+            for position in (0.0, 0.25, 0.5, 0.75, 1.0):
+                point = segment.point(position)
+
+                if not (
+                    np.isfinite(point.real)
+                    and np.isfinite(point.imag)
+                ):
+                    return False
+
+        return True
+
+    except Exception:
+        logger.exception("SVG path coordinate validation failed.")
+        return False
+
+
 def validate_and_inspect_svg(
     svg_text: str,
 ) -> dict[str, Any]:
@@ -258,6 +281,11 @@ def validate_and_inspect_svg(
 
         try:
             path = parse_path(path_data)
+
+            if not _path_has_finite_coordinates(path):
+                invalid_paths += 1
+                continue
+
             segment_count = len(path)
 
             if segment_count > MAX_SEGMENTS_PER_PATH:
@@ -422,13 +450,10 @@ def _is_valid_closed_line_path(path: Path) -> bool:
     if len(points) < 3:
         return False
 
-    # Reject NaN and infinite coordinates.
     for x, y in points:
         if not np.isfinite(x) or not np.isfinite(y):
             return False
 
-    # Reject duplicate consecutive points,
-    # including between the final and first vertices.
     for index in range(len(points)):
         current = points[index]
         following = points[(index + 1) % len(points)]
@@ -436,7 +461,6 @@ def _is_valid_closed_line_path(path: Path) -> bool:
         if current == following:
             return False
 
-    # Reject zero-length or extremely short line segments.
     for segment in path:
         if abs(segment.end - segment.start) <= 1e-9:
             return False
@@ -514,7 +538,6 @@ def refine_bezier_paths(
             "SVG documents with DOCTYPE are not allowed."
         )
 
-    # Detect shared edges before changing any paths.
     protected_paths = _find_shared_edge_paths(root)
 
     refined_paths = 0
@@ -544,7 +567,6 @@ def refine_bezier_paths(
 
         inspected_paths += 1
 
-        # Never smooth a path involved in a shared edge.
         if current_index in protected_paths:
             protected_path_count += 1
             skipped_paths += 1
@@ -571,6 +593,12 @@ def refine_bezier_paths(
 
         try:
             path = parse_path(path_data)
+
+            if not _path_has_finite_coordinates(path):
+                invalid_geometry_paths += 1
+                skipped_paths += 1
+                continue
+
             segment_count = len(path)
 
             if segment_count < 3:
@@ -591,7 +619,6 @@ def refine_bezier_paths(
             total_path_bytes += path_size
             total_segments += segment_count
 
-            # Only process closed paths made entirely of lines.
             if not path.isclosed():
                 skipped_paths += 1
                 continue
@@ -603,7 +630,6 @@ def refine_bezier_paths(
                 skipped_paths += 1
                 continue
 
-            # Reject invalid geometry before smoothing.
             if not _is_valid_closed_line_path(path):
                 invalid_geometry_paths += 1
                 skipped_paths += 1
@@ -653,7 +679,6 @@ def refine_bezier_paths(
                     np.degrees(np.arccos(dot))
                 )
 
-                # Preserve sharp corners and nearly straight edges.
                 if (
                     turn < min_turn_degrees
                     or turn > max_turn_degrees
@@ -743,7 +768,6 @@ def refine_bezier_paths(
                 skipped_paths += 1
                 continue
 
-            # Replace the original path only after checks pass.
             element.set("d", refined_path.d())
 
             refined_paths += 1
@@ -761,7 +785,6 @@ def refine_bezier_paths(
         xml_declaration=False,
     )
 
-    # Validate the resulting SVG before returning it.
     validate_and_inspect_svg(result)
 
     return result, {
