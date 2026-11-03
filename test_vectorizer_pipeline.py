@@ -1,4 +1,3 @@
-
 import unittest
 from unittest.mock import patch
 
@@ -192,6 +191,40 @@ class TestBezierRefinement(unittest.TestCase):
 
 
 class TestSvgPathValidation(unittest.TestCase):
+
+    def test_script_elements_are_rejected(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <script>alert('unsafe')</script>
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        with self.assertRaises(ValueError):
+            validate_and_inspect_svg(svg)
+
+    def test_event_handler_attributes_are_rejected(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg"
+             onload="alert('unsafe')">
+            <path d="M 0 0 L 10 10 Z"/>
+        </svg>
+        """
+
+        with self.assertRaises(ValueError):
+            validate_and_inspect_svg(svg)
+
+    def test_foreign_object_elements_are_rejected(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <foreignObject width="100" height="100">
+                <div>Unsafe embedded content</div>
+            </foreignObject>
+        </svg>
+        """
+
+        with self.assertRaises(ValueError):
+            validate_and_inspect_svg(svg)
 
     def test_malformed_path_data_is_counted_as_invalid(self):
         svg = """
