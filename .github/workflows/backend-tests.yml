@@ -26,4 +26,4 @@ jobs:
 
       - name: Run vectorizer tests
         run: |
-          python -m unittest test_vectorizer_pipeline.py -v
+          python -m unittest discover -v
