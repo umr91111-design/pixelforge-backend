@@ -157,6 +157,44 @@ class TestIntelligentDenoising(unittest.TestCase):
         with self.assertRaises(ValueError):
             remove_image_noise(b"not an image")
 
+    def test_edge_pixel_is_protected(self):
+        image = np.full((9, 9, 3), 255, dtype=np.uint8)
+        image[0, 4] = (0, 0, 0)
+
+        output, report = remove_image_noise(
+            encode_image(image),
+            strength="balanced",
+        )
+
+        result = decode_image(output)
+
+        np.testing.assert_array_equal(
+            result[0, 4, :3],
+            [0, 0, 0],
+        )
+
+        self.assertEqual(report["pixels_replaced"], 0)
+
+    def test_clustered_details_are_preserved(self):
+        image = np.full((15, 15, 3), 255, dtype=np.uint8)
+
+        # A connected 2x2 dark detail.
+        image[6:8, 6:8] = (0, 0, 0)
+
+        output, report = remove_image_noise(
+            encode_image(image),
+            strength="balanced",
+        )
+
+        result = decode_image(output)
+
+        for y in range(6, 8):
+            for x in range(6, 8):
+                self.assertLess(
+                    int(np.mean(result[y, x, :3])),
+                    50,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
