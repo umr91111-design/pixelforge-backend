@@ -1,3 +1,4 @@
+
 """Conservative, edge-aware noise removal for PixelForge AI."""
 
 import io
@@ -28,6 +29,7 @@ STRENGTH_SETTINGS = {
 
 def _neighbor_support(lab_image, threshold):
     """Count nearby pixels with a similar LAB color."""
+
     height, width = lab_image.shape[:2]
     support = np.zeros((height, width), dtype=np.uint8)
 
@@ -35,6 +37,7 @@ def _neighbor_support(lab_image, threshold):
 
     for dy in (-1, 0, 1):
         for dx in (-1, 0, 1):
+
             if dx == 0 and dy == 0:
                 continue
 
@@ -46,14 +49,15 @@ def _neighbor_support(lab_image, threshold):
             if y1 >= y2 or x1 >= x2:
                 continue
 
-            center = lab_image[y1:y2, x1:x2].astype(
-                np.int16
-            )
+            # int32 prevents overflow during squared distances.
+            center = lab_image[
+                y1:y2, x1:x2
+            ].astype(np.int32)
 
             neighbor = lab_image[
                 y1 + dy:y2 + dy,
                 x1 + dx:x2 + dx,
-            ].astype(np.int16)
+            ].astype(np.int32)
 
             difference = center - neighbor
 
@@ -64,7 +68,7 @@ def _neighbor_support(lab_image, threshold):
 
             support[y1:y2, x1:x2] += (
                 distance_squared <= threshold_squared
-            )
+            ).astype(np.uint8)
 
     return support
 
@@ -77,7 +81,7 @@ def remove_image_noise(
     Remove conservative isolated color outliers.
 
     Connected details and pixels near transparency boundaries
-    are protected. Alpha values and image dimensions are preserved.
+    are protected. Alpha values and dimensions are preserved.
 
     Returns:
         PNG image bytes and a processing report.
@@ -96,13 +100,16 @@ def remove_image_noise(
 
     try:
         with Image.open(io.BytesIO(image_bytes)) as source:
+
             image = ImageOps.exif_transpose(source)
             image.load()
 
             width, height = image.size
 
             if width < 1 or height < 1:
-                raise ValueError("Image dimensions are invalid.")
+                raise ValueError(
+                    "Image dimensions are invalid."
+                )
 
             if width * height > MAX_PIXELS:
                 raise ValueError(
@@ -116,11 +123,13 @@ def remove_image_noise(
 
     except ValueError:
         raise
+
     except (
         UnidentifiedImageError,
         OSError,
         Image.DecompressionBombError,
     ) as exc:
+
         raise ValueError(
             "The uploaded image could not be decoded."
         ) from exc
@@ -131,7 +140,9 @@ def remove_image_noise(
     visible = alpha > 0
 
     if not np.any(visible):
+
         output = Image.fromarray(rgba, "RGBA")
+
         buffer = io.BytesIO()
         output.save(buffer, format="PNG")
 
@@ -146,7 +157,7 @@ def remove_image_noise(
 
     settings = STRENGTH_SETTINGS[strength]
 
-    # A 3x3 median provides a local replacement candidate.
+    # Generate a local median replacement candidate.
     median_rgb = cv2.medianBlur(rgb, 3)
 
     original_lab = cv2.cvtColor(
@@ -159,15 +170,16 @@ def remove_image_noise(
         cv2.COLOR_RGB2LAB,
     )
 
-    # Count similar neighbors to protect connected strokes.
+    # Identify pixels that have no similar neighboring pixels.
     support = _neighbor_support(
         original_lab,
         settings["neighbor_threshold"],
     )
 
+    # Use int32 to prevent squared-distance overflow.
     difference = (
-        original_lab.astype(np.int16)
-        - median_lab.astype(np.int16)
+        original_lab.astype(np.int32)
+        - median_lab.astype(np.int32)
     )
 
     distance_squared = np.sum(
@@ -179,8 +191,10 @@ def remove_image_noise(
         settings["difference_threshold"] ** 2
     )
 
-    # Do not process pixels next to transparent areas.
-    opaque_mask = (alpha > 0).astype(np.uint8)
+    # Protect pixels next to transparent areas.
+    opaque_mask = (
+        alpha > 0
+    ).astype(np.uint8)
 
     safe_interior = cv2.erode(
         opaque_mask,
@@ -188,7 +202,8 @@ def remove_image_noise(
         iterations=1,
     ).astype(bool)
 
-    # Replace only isolated outliers with no similar neighbors.
+    # Only replace isolated pixels that strongly differ
+    # from their local median.
     candidates = (
         visible
         & safe_interior
@@ -197,6 +212,7 @@ def remove_image_noise(
     )
 
     result = rgba.copy()
+
     result_rgb = result[:, :, :3]
 
     result_rgb[candidates] = median_rgb[candidates]
@@ -204,6 +220,7 @@ def remove_image_noise(
     output = Image.fromarray(result, "RGBA")
 
     buffer = io.BytesIO()
+
     output.save(
         buffer,
         format="PNG",
@@ -212,8 +229,12 @@ def remove_image_noise(
 
     report = {
         "strength": strength,
-        "pixels_examined": int(np.count_nonzero(visible)),
-        "pixels_replaced": int(np.count_nonzero(candidates)),
+        "pixels_examined": int(
+            np.count_nonzero(visible)
+        ),
+        "pixels_replaced": int(
+            np.count_nonzero(candidates)
+        ),
         "transparent_image": False,
         "alpha_preserved": True,
         "width": width,
