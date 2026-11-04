@@ -13,6 +13,7 @@ from PIL import Image, UnidentifiedImageError
 from lxml import etree
 
 from adaptive_preprocessing import adaptive_color_preprocess
+from intelligent_denoising import remove_image_noise
 from shape_detector import detect_shapes, refine_svg_with_primitives
 from vectorizer_pipeline import (
     refine_bezier_paths,
@@ -185,6 +186,8 @@ async def health():
             "tracing_presets": True,
             "default_tracing_preset": DEFAULT_PRESET,
             "adaptive_color_preprocessing": True,
+            "intelligent_denoising": True,
+            "denoising_default": "disabled",
             "adaptive_preprocessing_colors": PREPROCESS_COLORS,
             "adaptive_preprocessing_smoothing": PREPROCESS_SMOOTHING,
             "opencv_primitive_detection": True,
@@ -217,6 +220,13 @@ async def features():
             "modes": ["color", "binary"],
             "default_preset": DEFAULT_PRESET,
             "presets": list_tracing_presets(),
+        },
+        "intelligent_denoising": {
+            "enabled": True,
+            "default": "disabled",
+            "strengths": ["light", "balanced", "strong"],
+            "method": "conservative isolated outlier removal",
+            "alpha_preservation": True,
         },
         "adaptive_preprocessing": {
             "enabled": True,
@@ -444,6 +454,8 @@ async def trace_image(
     preset: str = Form(DEFAULT_PRESET),
     recognize_primitives: bool = Form(True),
     refine_geometry: bool = Form(True),
+    denoise: bool = Form(False),
+    denoise_strength: str = Form("balanced"),
 ):
     try:
         # STEP 1: Validate the selected tracing preset.
@@ -525,6 +537,40 @@ async def trace_image(
         vectorizer_data = data
         vectorizer_format = image_format
 
+        denoising_status = "disabled"
+        denoising_report = {}
+
+        # Denoising is opt-in; existing clients keep their current behavior.
+        if denoise is True:
+            if not isinstance(denoise_strength, str) or denoise_strength not in {
+                "light", "balanced", "strong"
+            }:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Choose denoising strength: light, balanced, or strong.",
+                )
+
+            try:
+                vectorizer_data, denoising_report = await asyncio.to_thread(
+                    remove_image_noise,
+                    data,
+                    denoise_strength,
+                )
+                vectorizer_format = "png"
+                denoising_status = "completed"
+                logger.info(
+                    "Intelligent denoising completed: strength=%s replaced=%s",
+                    denoising_report.get("strength"),
+                    denoising_report.get("pixels_replaced"),
+                )
+            except Exception:
+                logger.exception(
+                    "Intelligent denoising failed; using original uploaded image."
+                )
+                vectorizer_data = data
+                vectorizer_format = image_format
+                denoising_status = "fallback"
+
         preprocessing_status = "disabled"
         preprocessing_report = {}
 
@@ -537,7 +583,7 @@ async def trace_image(
                         preprocessing_report,
                     ) = await asyncio.to_thread(
                         adaptive_color_preprocess,
-                        data,
+                        vectorizer_data,
                         preset_settings["preprocessing_colors"],
                         preset_settings["preprocessing_smoothing"],
                     )
@@ -842,6 +888,13 @@ async def trace_image(
                     "X-PixelForge-Preset": selected_preset,
                     "X-PixelForge-Detected-Shapes": str(
                         len(detected_shapes)
+                    ),
+                    "X-PixelForge-Intelligent-Denoising": denoising_status,
+                    "X-PixelForge-Denoising-Strength": str(
+                        denoising_report.get("strength", "none")
+                    ),
+                    "X-PixelForge-Denoising-Pixels-Replaced": str(
+                        denoising_report.get("pixels_replaced", 0)
                     ),
                     "X-PixelForge-Adaptive-Preprocessing": (
                         preprocessing_status
