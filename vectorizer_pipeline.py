@@ -1,3 +1,4 @@
+
 """Unified CPU-only analysis and topology-aware SVG refinement pipeline."""
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ from PIL import Image, UnidentifiedImageError
 from shapely.geometry import Polygon
 from skimage import color, filters, morphology
 from svgpathtools import parse_path, Line, CubicBezier, Path
+
+from topology_optimizer import analyze_svg_topology
 
 logger = logging.getLogger("pixelforge.pipeline")
 
@@ -176,10 +179,7 @@ def analyze_contour_geometry(
 
 
 def _validate_svg_active_content(root: etree._Element) -> None:
-    """
-    Reject active or embedded content that should not be
-    present in generated artwork SVGs.
-    """
+    """Reject active or embedded content in SVG artwork."""
     blocked_elements = {
         "script",
         "foreignobject",
@@ -211,7 +211,7 @@ def _validate_svg_active_content(root: etree._Element) -> None:
 
 
 def _path_has_finite_coordinates(path: Path) -> bool:
-    """Check that sampled points along every SVG segment are finite."""
+    """Check that sampled points along SVG segments are finite."""
     try:
         if not path:
             return False
@@ -234,7 +234,7 @@ def _path_has_finite_coordinates(path: Path) -> bool:
 
 
 def _parse_svg_root(svg_text: str) -> etree._Element:
-    """Parse SVG XML and apply common document security checks."""
+    """Parse SVG XML and apply document security checks."""
     if not isinstance(svg_text, str) or not svg_text.strip():
         raise ValueError("SVG input is empty.")
 
@@ -374,11 +374,12 @@ def run_vectorizer_analysis(
     image_bytes: bytes,
     svg_text: str,
 ) -> dict[str, Any]:
-    """Run CPU-based analysis after VTracer generates SVG."""
+    """Run image, SVG and topology analysis after VTracer."""
     return {
         "segmentation": segment_image(image_bytes),
         "geometry": analyze_contour_geometry(image_bytes),
         "svg": validate_and_inspect_svg(svg_text),
+        "topology": analyze_svg_topology(svg_text),
         "deep_learning": False,
         "gpu_required": False,
     }
@@ -401,10 +402,7 @@ def _shared_edge_key(segment: Line) -> tuple:
 def _find_shared_edge_paths(
     root: etree._Element,
 ) -> set[int]:
-    """
-    Find closed line-only paths that share an identical
-    straight-line edge with another path.
-    """
+    """Find paths sharing an identical straight-line edge."""
     edge_owners: dict[tuple, set[int]] = {}
     protected_paths: set[int] = set()
 
@@ -497,7 +495,7 @@ def _find_shared_edge_paths(
 
 
 def _is_valid_closed_line_path(path: Path) -> bool:
-    """Check whether a closed, line-only path forms valid geometry."""
+    """Check whether a closed line-only path forms valid geometry."""
     if not path or not path.isclosed():
         return False
 
@@ -551,13 +549,7 @@ def refine_bezier_paths(
     min_turn_degrees: float = 3.0,
     trim_ratio: float = 0.15,
 ) -> tuple[str, dict[str, Any]]:
-    """
-    Conservatively smooth shallow corners in closed,
-    line-only SVG paths.
-
-    Invalid polygons and paths sharing an identical full
-    straight-line edge are protected from smoothing.
-    """
+    """Conservatively smooth shallow corners in closed line-only paths."""
     if not (
         0 < min_turn_degrees
         < max_turn_degrees
