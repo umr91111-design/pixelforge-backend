@@ -12,8 +12,8 @@ INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
 class TestEditableSVGLayers(unittest.TestCase):
 
     def test_creates_layer_for_svg_paths(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <path id="one" fill="red" d="M0 0 L10 0 L10 10 Z"/>
             <path id="two" fill="red" d="M20 0 L30 0 L30 10 Z"/>
         </svg>
@@ -29,8 +29,8 @@ class TestEditableSVGLayers(unittest.TestCase):
         self.assertEqual(report["paths_processed"], 2)
 
     def test_different_colors_create_separate_layers(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <path fill="red" d="M0 0 L10 0 L10 10 Z"/>
             <path fill="blue" d="M20 0 L30 0 L30 10 Z"/>
         </svg>
@@ -45,8 +45,8 @@ class TestEditableSVGLayers(unittest.TestCase):
         self.assertEqual(report["layers_created"], 2)
 
     def test_layer_has_inkscape_attributes(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <path fill="red" d="M0 0 L10 0 L10 10 Z"/>
         </svg>
         """
@@ -82,8 +82,8 @@ class TestEditableSVGLayers(unittest.TestCase):
         self.assertEqual(path.get("d"), path_data)
 
     def test_drawing_order_is_preserved(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <path id="first" fill="red" d="M0 0 L1 0 L1 1 Z"/>
             <path id="second" fill="blue" d="M2 0 L3 0 L3 1 Z"/>
             <circle id="middle" cx="5" cy="5" r="2"/>
@@ -113,8 +113,8 @@ class TestEditableSVGLayers(unittest.TestCase):
         )
 
     def test_style_fill_is_detected(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <path style="fill: #ff0000" d="M0 0 L1 0 L1 1 Z"/>
         </svg>
         """
@@ -133,14 +133,36 @@ class TestEditableSVGLayers(unittest.TestCase):
             create_editable_svg_layers("<svg><path></svg>")
 
     def test_script_is_rejected(self):
-        svg = """
-        <svg xmlns="http://www.w3.org/2000/svg">
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
             <script>alert(1)</script>
         </svg>
         """
 
         with self.assertRaises(ValueError):
             create_editable_svg_layers(svg)
+
+    def test_generated_layer_ids_do_not_duplicate_existing_ids(self):
+        svg = f"""
+        <svg xmlns="{SVG_NS}">
+            <g id="pixelforge-layer-0001"/>
+            <path id="shape-1" fill="red" d="M0 0 L10 10"/>
+        </svg>
+        """
+
+        result, report = create_editable_svg_layers(svg)
+
+        root = etree.fromstring(result.encode("utf-8"))
+
+        ids = [
+            element.get("id")
+            for element in root.iter()
+            if element.get("id")
+        ]
+
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn("pixelforge-layer-0001-1", ids)
+        self.assertEqual(report["layers_created"], 1)
 
 
 if __name__ == "__main__":
