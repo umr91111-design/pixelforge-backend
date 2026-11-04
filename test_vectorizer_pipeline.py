@@ -1,3 +1,4 @@
+
 import unittest
 from unittest.mock import patch
 
@@ -188,6 +189,36 @@ class TestBezierRefinement(unittest.TestCase):
 
         self.assertNotIn("C", paths["first"])
         self.assertNotIn("C", paths["second"])
+
+    def test_bezier_refinement_preserves_svg_attributes(self):
+        svg = """
+        <svg xmlns="http://www.w3.org/2000/svg">
+            <path id="test-shape"
+                  d="M 0 0 L 100 0 L 200 20
+                     L 200 120 L 0 120 Z"
+                  fill="#ff0000"
+                  stroke="#000000"
+                  stroke-width="2"/>
+        </svg>
+        """
+
+        result, report = refine_bezier_paths(svg)
+
+        root = etree.fromstring(result.encode("utf-8"))
+
+        path = next(
+            element
+            for element in root.iter()
+            if isinstance(element.tag, str)
+            and etree.QName(element).localname == "path"
+        )
+
+        self.assertGreater(report["refined_paths"], 0)
+        self.assertEqual(path.get("id"), "test-shape")
+        self.assertEqual(path.get("fill"), "#ff0000")
+        self.assertEqual(path.get("stroke"), "#000000")
+        self.assertEqual(path.get("stroke-width"), "2")
+        self.assertIn("C", path.get("d"))
 
 
 class TestSvgPathValidation(unittest.TestCase):
