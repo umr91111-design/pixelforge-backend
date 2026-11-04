@@ -1,13 +1,23 @@
+"""PixelForge AI VTracer worker with configurable tracing presets."""
 
 import sys
 import traceback
 
-import vtracer
 from lxml import etree
+
+from vtracer_config import build_vtracer_config
 
 
 ALLOWED_FORMATS = {"png", "jpg", "webp"}
 ALLOWED_MODES = {"color", "binary"}
+ALLOWED_PRESETS = {
+    "logo",
+    "artwork",
+    "line_art",
+    "high_detail",
+}
+
+DEFAULT_PRESET = "artwork"
 
 MAX_INPUT_BYTES = 5 * 1024 * 1024
 MAX_SVG_BYTES = 20 * 1024 * 1024
@@ -38,24 +48,25 @@ def validate_svg(svg_text):
 
     root = etree.fromstring(svg_bytes, parser=parser)
 
-    # Check the root element name, allowing SVG documents
-    # both with and without the standard SVG namespace.
     root_name = etree.QName(root).localname.lower()
 
     if root_name != "svg":
-        raise ValueError("VTracer output does not have an SVG root element.")
+        raise ValueError(
+            "VTracer output does not have an SVG root element."
+        )
 
-    # Reject documents containing a document type declaration.
     if root.getroottree().docinfo.doctype:
-        raise ValueError("SVG document type declarations are not allowed.")
+        raise ValueError(
+            "SVG document type declarations are not allowed."
+        )
 
     return svg_text
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in {3, 4}:
         print(
-            "Missing image format or tracing mode.",
+            "Expected image format, tracing mode, and optional preset.",
             file=sys.stderr,
             flush=True,
         )
@@ -64,35 +75,68 @@ def main():
     image_format = sys.argv[1].lower()
     mode = sys.argv[2].lower()
 
+    preset_name = (
+        sys.argv[3].strip().lower()
+        if len(sys.argv) == 4
+        else DEFAULT_PRESET
+    )
+
     if image_format not in ALLOWED_FORMATS:
-        print("Unsupported image format.", file=sys.stderr, flush=True)
+        print(
+            "Unsupported image format.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
 
     if mode not in ALLOWED_MODES:
-        print("Unsupported tracing mode.", file=sys.stderr, flush=True)
+        print(
+            "Unsupported tracing mode.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
+
+    if preset_name not in ALLOWED_PRESETS:
+        print(
+            "Unsupported tracing preset.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
 
     image_data = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
 
     if not image_data:
-        print("No image data received.", file=sys.stderr, flush=True)
+        print(
+            "No image data received.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
 
     if len(image_data) > MAX_INPUT_BYTES:
-        print("Input image exceeds the size limit.", file=sys.stderr, flush=True)
+        print(
+            "Input image exceeds the size limit.",
+            file=sys.stderr,
+            flush=True,
+        )
         return 2
 
     try:
         print(
-            f"Starting VTracer: mode={mode}, format={image_format}",
+            (
+                f"Starting VTracer: mode={mode}, "
+                f"format={image_format}, preset={preset_name}"
+            ),
             file=sys.stderr,
             flush=True,
         )
 
-        if mode == "color":
-            config = vtracer.Config()
-        else:
-            config = vtracer.Config.bw()
+        config = build_vtracer_config(
+            preset_name=preset_name,
+            tracing_mode=mode,
+        )
 
         svg_output = config.convert_bytes(
             image_data,
@@ -104,16 +148,21 @@ def main():
         elif isinstance(svg_output, str):
             svg_text = svg_output
         else:
-            raise ValueError("VTracer returned an unsupported output type.")
+            raise ValueError(
+                "VTracer returned an unsupported output type."
+            )
 
         svg_text = validate_svg(svg_text)
 
-        # stdout contains only the SVG document.
+        # stdout must contain only the SVG document.
         sys.stdout.write(svg_text)
         sys.stdout.flush()
 
         print(
-            "VTracer conversion and SVG validation completed.",
+            (
+                "VTracer conversion completed: "
+                f"preset={preset_name}"
+            ),
             file=sys.stderr,
             flush=True,
         )
