@@ -1,9 +1,4 @@
-"""Editable SVG layer preparation for PixelForge AI.
-
-Groups consecutive SVG paths with matching fill colors into
-named Inkscape-compatible layers without changing path geometry
-or reordering artwork.
-"""
+"""Editable SVG layer preparation for PixelForge AI."""
 
 from lxml import etree
 
@@ -13,8 +8,6 @@ MAX_ELEMENTS = 10000
 
 SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
-
-NS = {"svg": SVG_NS}
 
 
 def _parse_svg(svg_text):
@@ -33,10 +26,7 @@ def _parse_svg(svg_text):
     )
 
     try:
-        root = etree.fromstring(
-            svg_text.encode("utf-8"),
-            parser=parser,
-        )
+        root = etree.fromstring(svg_text.encode("utf-8"), parser)
     except (etree.XMLSyntaxError, ValueError, UnicodeError) as exc:
         raise ValueError("Invalid SVG XML.") from exc
 
@@ -58,7 +48,6 @@ def _parse_svg(svg_text):
 
         for attribute in element.attrib:
             name = etree.QName(attribute).localname.lower()
-
             if name.startswith("on") and len(name) > 2:
                 raise ValueError("SVG contains an event handler.")
 
@@ -66,10 +55,7 @@ def _parse_svg(svg_text):
 
 
 def _get_fill(path):
-    """Read the effective fill declaration on a path."""
-
     fill = path.get("fill")
-
     style = path.get("style", "")
 
     for declaration in style.split(";"):
@@ -85,22 +71,37 @@ def _get_fill(path):
     return (fill or "black").strip().lower()
 
 
-def _make_layer(root, paths, fill, layer_number):
-    """Wrap consecutive paths in an editable Inkscape layer."""
+def _collect_existing_ids(root):
+    """Collect existing IDs so generated layer IDs cannot collide."""
+    return {
+        element.get("id")
+        for element in root.iter()
+        if isinstance(element.tag, str) and element.get("id")
+    }
 
-    group = etree.Element(
-        f"{{{SVG_NS}}}g"
-        if etree.QName(root).namespace == SVG_NS
-        else "g"
-    )
 
-    group.set("id", f"pixelforge-layer-{layer_number:04d}")
+def _next_layer_id(existing_ids, layer_number):
+    """Generate a unique, deterministic layer ID."""
+    base = f"pixelforge-layer-{layer_number:04d}"
+    candidate = base
+    suffix = 1
 
-    group.set(
-        f"{{{INKSCAPE_NS}}}groupmode",
-        "layer",
-    )
+    while candidate in existing_ids:
+        candidate = f"{base}-{suffix}"
+        suffix += 1
 
+    existing_ids.add(candidate)
+    return candidate
+
+
+def _make_layer(root, paths, fill, layer_number, existing_ids):
+    namespace = etree.QName(root).namespace
+
+    group_tag = f"{{{namespace}}}g" if namespace else "g"
+    group = etree.Element(group_tag)
+
+    group.set("id", _next_layer_id(existing_ids, layer_number))
+    group.set(f"{{{INKSCAPE_NS}}}groupmode", "layer")
     group.set(
         f"{{{INKSCAPE_NS}}}label",
         f"Layer {layer_number:04d} — {fill}",
@@ -113,24 +114,15 @@ def _make_layer(root, paths, fill, layer_number):
 
 
 def create_editable_svg_layers(svg_text):
-    """
-    Create editable layers from consecutive paths with matching fills.
-
-    Path geometry, individual path attributes and drawing order
-    are retained.
-
-    Returns:
-        layered_svg: SVG XML text
-        report: processing information
-    """
+    """Group consecutive paths with matching fills into editable layers."""
 
     root = _parse_svg(svg_text)
-
     children = list(root)
 
     if len(children) > MAX_ELEMENTS:
         raise ValueError("SVG contains too many elements.")
 
+    existing_ids = _collect_existing_ids(root)
     output_children = []
 
     pending_paths = []
@@ -153,6 +145,7 @@ def create_editable_svg_layers(svg_text):
                 pending_paths,
                 pending_fill,
                 layer_count,
+                existing_ids,
             )
         )
 
@@ -160,7 +153,6 @@ def create_editable_svg_layers(svg_text):
         pending_fill = None
 
     for child in children:
-
         is_path = (
             isinstance(child.tag, str)
             and etree.QName(child).localname.lower() == "path"
@@ -203,4 +195,4 @@ def create_editable_svg_layers(svg_text):
         "geometry_modified": False,
         "drawing_order_preserved": True,
         "layer_format": "inkscape",
-          }
+        }
