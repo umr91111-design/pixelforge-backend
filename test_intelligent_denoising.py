@@ -1,3 +1,4 @@
+
 import io
 import unittest
 
@@ -34,7 +35,7 @@ class TestIntelligentDenoising(unittest.TestCase):
         self.assertEqual(report["height"], 32)
 
     def test_isolated_speckle_is_removed(self):
-        image = np.full(( nine :=  nine,  nine, 3), 255, dtype=np.uint8)
+        image = np.full((9, 9, 3), 255, dtype=np.uint8)
         image[4, 4] = (0, 0, 0)
 
         output, report = remove_image_noise(
