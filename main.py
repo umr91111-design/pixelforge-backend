@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
 from lxml import etree
 
+from adaptive_preprocessing import adaptive_color_preprocess
 from shape_detector import detect_shapes, refine_svg_with_primitives
 from vectorizer_pipeline import (
     refine_bezier_paths,
@@ -31,6 +32,9 @@ MAX_PIXELS = 4_000_000
 MAX_SVG_BYTES = 20 * 1024 * 1024
 WORKER_TIMEOUT = 60
 MAX_CONCURRENT_CONVERSIONS = 2
+
+PREPROCESS_COLORS = 8
+PREPROCESS_SMOOTHING = 3
 
 conversion_slots = asyncio.Semaphore(MAX_CONCURRENT_CONVERSIONS)
 
@@ -58,11 +62,12 @@ ALLOWED_ORIGINS = [
 app = FastAPI(
     title="PixelForge API",
     description=(
-        "PixelForge image vectorization API. Uses VTracer for vectorization, "
-        "OpenCV for primitive recognition, CPU-based image and SVG analysis, "
-        "and conservative Bézier path refinement."
+        "PixelForge hybrid image vectorization API. "
+        "Uses adaptive image preprocessing, VTracer, "
+        "OpenCV shape recognition, CPU-based image and "
+        "SVG analysis, and conservative Bézier refinement."
     ),
-    version="1.3.0",
+    version="1.4.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -87,10 +92,16 @@ async def security_headers(request, call_next):
         try:
             size = int(content_length)
         except ValueError:
-            return Response("Invalid Content-Length", status_code=400)
+            return Response(
+                "Invalid Content-Length",
+                status_code=400,
+            )
 
         if size > MAX_UPLOAD_BYTES + 256 * 1024:
-            return Response("Request too large", status_code=413)
+            return Response(
+                "Request too large",
+                status_code=413,
+            )
 
     response = await call_next(request)
 
@@ -166,13 +177,18 @@ async def health():
         "version": app.version,
         "features": {
             "vtracer": True,
+            "adaptive_color_preprocessing": True,
+            "adaptive_preprocessing_colors": PREPROCESS_COLORS,
+            "adaptive_preprocessing_smoothing": PREPROCESS_SMOOTHING,
             "opencv_primitive_detection": True,
             "scikit_image_segmentation": True,
             "shapely_geometry_analysis": True,
             "svg_path_inspection": True,
             "svg_recognition_metadata": True,
             "bezier_path_refinement": True,
-            "bezier_refinement_scope": "conservative closed line-only paths",
+            "bezier_refinement_scope": (
+                "conservative closed line-only paths"
+            ),
             "deep_learning_model": False,
             "gpu_required": False,
             "topology_aware_graph_optimizer": False,
@@ -188,6 +204,16 @@ async def features():
         "vectorization": {
             "engine": "VTracer",
             "modes": ["color", "binary"],
+        },
+        "adaptive_preprocessing": {
+            "enabled": True,
+            "engine": "PixelForge OpenCV and NumPy",
+            "color_space": "LAB",
+            "color_clusters": PREPROCESS_COLORS,
+            "smoothing": PREPROCESS_SMOOTHING,
+            "transparency_preservation": True,
+            "edge_preserving_smoothing": True,
+            "fallback_to_original": True,
         },
         "primitive_recognition": {
             "engine": "OpenCV contour analysis",
@@ -405,23 +431,72 @@ async def trace_image(
         await acquire_slot()
 
         started = time.monotonic()
+
         detected_shapes = []
         analysis_completed = False
+
         bezier_stats = {
             "refined_paths": 0,
             "refined_corners": 0,
             "skipped_paths": 0,
         }
+
         bezier_status = "disabled"
 
+        # The original upload is retained for diagnostics and shape detection.
+        vectorizer_data = data
+        vectorizer_format = image_format
+
+        preprocessing_status = "disabled"
+        preprocessing_report = {}
+
         try:
-            # STEP 1: Run VTracer.
+            # STEP 1: Adaptive preprocessing for color mode.
+            if selected_mode == "color":
+                try:
+                    (
+                        vectorizer_data,
+                        preprocessing_report,
+                    ) = await asyncio.to_thread(
+                        adaptive_color_preprocess,
+                        data,
+                        PREPROCESS_COLORS,
+                        PREPROCESS_SMOOTHING,
+                    )
+
+                    # Preprocessing always produces PNG output.
+                    vectorizer_format = "png"
+                    preprocessing_status = "completed"
+
+                    logger.info(
+                        (
+                            "Adaptive preprocessing completed: "
+                            "colors=%s requested=%s dimensions=%sx%s"
+                        ),
+                        preprocessing_report.get("colors_used"),
+                        preprocessing_report.get("colors_requested"),
+                        preprocessing_report.get("width"),
+                        preprocessing_report.get("height"),
+                    )
+
+                except Exception:
+                    # Keep the original VTracer behavior if preprocessing fails.
+                    logger.exception(
+                        "Adaptive preprocessing failed. "
+                        "Falling back to the original uploaded image."
+                    )
+
+                    vectorizer_data = data
+                    vectorizer_format = image_format
+                    preprocessing_status = "fallback"
+
+            # STEP 2: Run the original VTracer engine.
             try:
                 result = await asyncio.to_thread(
                     run_worker,
-                    image_format,
+                    vectorizer_format,
                     selected_mode,
-                    data,
+                    vectorizer_data,
                 )
 
             except subprocess.TimeoutExpired as exc:
@@ -477,9 +552,10 @@ async def trace_image(
                     detail="Vectorizer returned invalid SVG encoding.",
                 ) from exc
 
-            # STEP 2: Validate VTracer output.
+            # STEP 3: Validate VTracer output.
             try:
                 validate_svg(svg_text)
+
             except (ValueError, etree.XMLSyntaxError) as exc:
                 logger.exception("VTracer returned invalid SVG XML.")
 
@@ -488,10 +564,9 @@ async def trace_image(
                     detail="Conversion did not produce a valid SVG file.",
                 ) from exc
 
-            # Keep a valid copy as a fallback.
             original_svg = svg_text
 
-            # STEP 3: Detect shapes with OpenCV.
+            # STEP 4: Detect shapes using the original image.
             if recognize_primitives:
                 try:
                     detection = await asyncio.to_thread(
@@ -512,7 +587,7 @@ async def trace_image(
                         "keeping the original VTracer SVG."
                     )
 
-            # STEP 4: Add shape-recognition metadata.
+            # STEP 5: Add shape-recognition metadata.
             if refine_geometry and detected_shapes:
                 try:
                     candidate_svg = await asyncio.to_thread(
@@ -529,9 +604,10 @@ async def trace_image(
                         "Recognition metadata failed; "
                         "keeping the previous valid SVG."
                     )
+
                     svg_text = original_svg
 
-            # STEP 5: Run integrated CPU analysis.
+            # STEP 6: Run integrated CPU analysis.
             if refine_geometry:
                 try:
                     analysis = await asyncio.to_thread(
@@ -562,7 +638,7 @@ async def trace_image(
                         "retaining the generated SVG."
                     )
 
-            # STEP 6: Apply conservative Bézier refinement.
+            # STEP 7: Apply conservative Bézier refinement.
             if refine_geometry:
                 previous_valid_svg = svg_text
 
@@ -572,7 +648,6 @@ async def trace_image(
                         svg_text,
                     )
 
-                    # Never accept unvalidated refinement output.
                     validate_svg(candidate_svg)
 
                     if not isinstance(candidate_stats, dict):
@@ -614,7 +689,7 @@ async def trace_image(
                     svg_text = previous_valid_svg
                     bezier_status = "failed"
 
-            # STEP 7: Final output validation.
+            # STEP 8: Final SVG validation.
             final_svg = validate_svg(svg_text)
 
             elapsed = round(
@@ -625,11 +700,13 @@ async def trace_image(
             logger.info(
                 (
                     "Vectorization completed: output=%s bytes "
-                    "shapes=%s analysis=%s bezier=%s "
-                    "refined_paths=%s refined_corners=%s elapsed=%ss"
+                    "shapes=%s preprocessing=%s analysis=%s "
+                    "bezier=%s refined_paths=%s "
+                    "refined_corners=%s elapsed=%ss"
                 ),
                 len(final_svg),
                 len(detected_shapes),
+                preprocessing_status,
                 analysis_completed,
                 bezier_status,
                 bezier_stats["refined_paths"],
@@ -655,6 +732,12 @@ async def trace_image(
                     "X-Content-Type-Options": "nosniff",
                     "X-PixelForge-Detected-Shapes": str(
                         len(detected_shapes)
+                    ),
+                    "X-PixelForge-Adaptive-Preprocessing": (
+                        preprocessing_status
+                    ),
+                    "X-PixelForge-Preprocessing-Colors": str(
+                        preprocessing_report.get("colors_used", 0)
                     ),
                     "X-PixelForge-Deep-Learning": "not-configured",
                     "X-PixelForge-CPU-Analysis": analysis_status,
