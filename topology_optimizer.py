@@ -1,12 +1,14 @@
-"""Safe topology analysis for PixelForge AI SVG output.
 
-This module detects:
-- Overlapping closed polygon paths.
-- Shared boundaries between neighboring paths.
-- Small gaps between nearby paths.
+"""Safe SVG topology analysis and repair planning for PixelForge AI.
 
-It does not modify SVG geometry. Automatic repair will be
-implemented only after detection is tested.
+This version:
+- Detects overlaps between simple closed polygons.
+- Detects shared boundaries.
+- Detects nearby gaps.
+- Produces repair candidates for later geometry optimization.
+- Never changes SVG geometry automatically.
+
+Only simple closed line-only paths without transforms are analyzed.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ MAX_TOTAL_SEGMENTS = 10000
 DEFAULT_GAP_TOLERANCE = 1.5
 MIN_OVERLAP_AREA = 0.01
 MIN_SHARED_BOUNDARY_LENGTH = 0.01
+MIN_POLYGON_AREA = 1e-8
 
 
 def _parse_svg(svg_text: str) -> etree._Element:
@@ -75,19 +78,23 @@ def _parse_svg(svg_text: str) -> etree._Element:
         name = etree.QName(element).localname.lower()
 
         if name in blocked:
-            raise ValueError("SVG contains prohibited active content.")
+            raise ValueError(
+                "SVG contains prohibited active content."
+            )
 
         for attribute in element.attrib:
             local_name = etree.QName(attribute).localname.lower()
 
             if local_name.startswith("on") and len(local_name) > 2:
-                raise ValueError("SVG contains an event handler.")
+                raise ValueError(
+                    "SVG contains an event handler."
+                )
 
     return root
 
 
 def _has_transform(element: etree._Element) -> bool:
-    """Skip paths with transforms until transform handling is supported."""
+    """Return True if this element or an ancestor has a transform."""
 
     current = element
 
@@ -101,12 +108,15 @@ def _has_transform(element: etree._Element) -> bool:
 
 
 def _path_to_polygon(path_data: str) -> Polygon | None:
-    """Convert a simple closed line-only SVG path into a polygon."""
+    """Convert a simple closed line-only path into a valid polygon."""
 
     if not path_data:
         return None
 
-    path = parse_path(path_data)
+    try:
+        path = parse_path(path_data)
+    except Exception:
+        return None
 
     if not path or len(path) > MAX_SEGMENTS_PER_PATH:
         return None
@@ -136,16 +146,22 @@ def _path_to_polygon(path_data: str) -> Polygon | None:
         if abs(end - start) <= 1e-9:
             return None
 
-        points.append((float(start.real), float(start.imag)))
+        points.append((
+            float(start.real),
+            float(start.imag),
+        ))
 
     if len(points) < 3:
         return None
 
-    polygon = Polygon(points)
+    try:
+        polygon = Polygon(points)
+    except Exception:
+        return None
 
     if (
         polygon.is_empty
-        or polygon.area <= 0
+        or polygon.area <= MIN_POLYGON_AREA
         or not polygon.is_valid
         or not polygon.exterior.is_simple
     ):
@@ -154,28 +170,8 @@ def _path_to_polygon(path_data: str) -> Polygon | None:
     return polygon
 
 
-def analyze_svg_topology(
-    svg_text: str,
-    gap_tolerance: float = DEFAULT_GAP_TOLERANCE,
-) -> dict:
-    """Analyze polygon relationships without changing the SVG.
-
-    Gap tolerance is measured in SVG coordinate units.
-
-    Only simple, closed, line-only paths without SVG transforms
-    are analyzed. Curves, transformed paths, and invalid polygons
-    are safely skipped.
-    """
-
-    if (
-        not isinstance(gap_tolerance, (int, float))
-        or not np.isfinite(gap_tolerance)
-        or gap_tolerance < 0
-        or gap_tolerance > 100
-    ):
-        raise ValueError("Gap tolerance must be between 0 and 100.")
-
-    root = _parse_svg(svg_text)
+def _inspect_paths(root: etree._Element) -> tuple:
+    """Collect supported polygons and count skipped paths."""
 
     polygons = []
     skipped_paths = 0
@@ -201,11 +197,11 @@ def analyze_svg_topology(
 
         path_data = element.get("d", "")
 
-        try:
-            if not path_data:
-                skipped_paths += 1
-                continue
+        if not path_data:
+            skipped_paths += 1
+            continue
 
+        try:
             parsed = parse_path(path_data)
             segment_count = len(parsed)
 
@@ -233,11 +229,36 @@ def analyze_svg_topology(
 
         except Exception:
             skipped_paths += 1
-            logger.exception("Topology analysis skipped an SVG path.")
+            logger.exception(
+                "Topology analysis skipped an SVG path."
+            )
+
+    return polygons, inspected_paths, skipped_paths
+
+
+def _path_reference(path_info: dict) -> dict:
+    """Return a stable reference to an analyzed path."""
+
+    result = {
+        "path_index": path_info["index"],
+    }
+
+    if path_info.get("element_id"):
+        result["element_id"] = path_info["element_id"]
+
+    return result
+
+
+def _analyze_polygon_pairs(
+    polygons: list,
+    gap_tolerance: float,
+) -> tuple:
+    """Inspect polygon pairs and produce diagnostic repair candidates."""
 
     overlaps = []
     shared_boundaries = []
     nearby_gaps = []
+    repair_candidates = []
 
     pair_checks = 0
 
@@ -247,71 +268,186 @@ def analyze_svg_topology(
         polygon_a = first["polygon"]
         polygon_b = second["polygon"]
 
-        # Avoid expensive geometry operations for distant paths.
-        if not polygon_a.envelope.intersects(polygon_b.envelope):
-            distance = polygon_a.distance(polygon_b)
+        ref_a = _path_reference(first)
+        ref_b = _path_reference(second)
 
-            if 0 < distance <= gap_tolerance:
-                nearby_gaps.append({
-                    "path_a": first["index"],
-                    "path_b": second["index"],
-                    "distance": round(float(distance), 4),
-                })
+        # First use bounding boxes to avoid unnecessary intersections.
+        envelopes_intersect = (
+            polygon_a.envelope.intersects(polygon_b.envelope)
+        )
 
-            continue
+        if envelopes_intersect:
+            intersection = polygon_a.intersection(polygon_b)
 
-        intersection = polygon_a.intersection(polygon_b)
+            overlap_area = float(intersection.area)
 
-        if intersection.area > MIN_OVERLAP_AREA:
-            overlaps.append({
+            shared_length = float(
+                polygon_a.boundary.intersection(
+                    polygon_b.boundary
+                ).length
+            )
+
+        else:
+            overlap_area = 0.0
+            shared_length = 0.0
+
+        distance = float(polygon_a.distance(polygon_b))
+
+        has_overlap = overlap_area > MIN_OVERLAP_AREA
+        has_shared_boundary = (
+            shared_length > MIN_SHARED_BOUNDARY_LENGTH
+        )
+
+        if has_overlap:
+            overlap_info = {
                 "path_a": first["index"],
                 "path_b": second["index"],
-                "overlap_area": round(float(intersection.area), 4),
+                "overlap_area": round(overlap_area, 4),
+            }
+
+            overlaps.append(overlap_info)
+
+            # Overlap is not automatically an error.
+            # It may be intentional artwork layering.
+            repair_candidates.append({
+                "type": "overlap_review",
+                "path_a": ref_a,
+                "path_b": ref_b,
+                "measured_overlap_area": round(
+                    overlap_area, 4
+                ),
+                "automatic_repair_allowed": False,
+                "reason": (
+                    "Overlapping paths may represent intentional "
+                    "layering or separate colored objects."
+                ),
             })
 
-        shared_length = polygon_a.boundary.intersection(
-            polygon_b.boundary
-        ).length
-
-        if shared_length > MIN_SHARED_BOUNDARY_LENGTH:
+        if has_shared_boundary:
             shared_boundaries.append({
                 "path_a": first["index"],
                 "path_b": second["index"],
-                "shared_length": round(float(shared_length), 4),
+                "shared_length": round(shared_length, 4),
             })
 
-        distance = polygon_a.distance(polygon_b)
-
-        if (
-            intersection.area <= MIN_OVERLAP_AREA
-            and shared_length <= MIN_SHARED_BOUNDARY_LENGTH
+        is_nearby_gap = (
+            not has_overlap
+            and not has_shared_boundary
             and 0 < distance <= gap_tolerance
-        ):
-            nearby_gaps.append({
+        )
+
+        if is_nearby_gap:
+            gap_info = {
                 "path_a": first["index"],
                 "path_b": second["index"],
-                "distance": round(float(distance), 4),
+                "distance": round(distance, 4),
+            }
+
+            nearby_gaps.append(gap_info)
+
+            # A small gap might be intentional.
+            # Do not snap or merge these shapes automatically.
+            repair_candidates.append({
+                "type": "gap_review",
+                "path_a": ref_a,
+                "path_b": ref_b,
+                "measured_distance": round(distance, 4),
+                "automatic_repair_allowed": False,
+                "reason": (
+                    "Nearby paths may be separate objects. "
+                    "Their intended connection is unknown."
+                ),
             })
+
+    return (
+        overlaps,
+        shared_boundaries,
+        nearby_gaps,
+        repair_candidates,
+        pair_checks,
+    )
+
+
+def analyze_svg_topology(
+    svg_text: str,
+    gap_tolerance: float = DEFAULT_GAP_TOLERANCE,
+) -> dict:
+    """Analyze SVG topology without modifying its geometry.
+
+    Supported geometry:
+    - Simple closed polygons.
+    - Straight line segments.
+    - Paths without SVG transforms.
+
+    Curves, transformed paths and invalid polygons are skipped.
+
+    The result includes repair candidates for review, but no
+    automatic geometry modification is performed.
+    """
+
+    if (
+        isinstance(gap_tolerance, bool)
+        or not isinstance(gap_tolerance, (int, float))
+        or not np.isfinite(gap_tolerance)
+        or gap_tolerance < 0
+        or gap_tolerance > 100
+    ):
+        raise ValueError(
+            "Gap tolerance must be between 0 and 100."
+        )
+
+    root = _parse_svg(svg_text)
+
+    (
+        polygons,
+        inspected_paths,
+        skipped_paths,
+    ) = _inspect_paths(root)
+
+    (
+        overlaps,
+        shared_boundaries,
+        nearby_gaps,
+        repair_candidates,
+        pair_checks,
+    ) = _analyze_polygon_pairs(
+        polygons,
+        float(gap_tolerance),
+    )
 
     return {
         "topology_engine": "shapely",
         "analysis_only": True,
         "geometry_modified": False,
+
+        "repair_planning_enabled": True,
+        "automatic_repair_enabled": False,
+
         "paths_found": inspected_paths,
         "valid_polygons": len(polygons),
         "skipped_paths": skipped_paths,
         "pair_checks": pair_checks,
+
         "overlaps_found": len(overlaps),
         "shared_boundaries_found": len(shared_boundaries),
         "nearby_gaps_found": len(nearby_gaps),
+
         "overlaps": overlaps,
         "shared_boundaries": shared_boundaries,
         "nearby_gaps": nearby_gaps,
+
+        "repair_candidates_found": len(repair_candidates),
+        "repair_candidates": repair_candidates,
+
         "gap_tolerance": float(gap_tolerance),
+
         "limitations": [
             "Only closed line-only paths are analyzed.",
             "Paths with SVG transforms are skipped.",
             "Curved paths are skipped.",
+            "Complex SVG path relationships are not repaired.",
+            "Small gaps may be intentional.",
+            "Overlapping paths may be intentional.",
             "No automatic geometry repair is performed.",
         ],
     }
