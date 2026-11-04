@@ -1,4 +1,3 @@
-
 """Unified CPU-only analysis and topology-aware SVG refinement pipeline."""
 
 from __future__ import annotations
@@ -549,7 +548,17 @@ def refine_bezier_paths(
     min_turn_degrees: float = 3.0,
     trim_ratio: float = 0.15,
 ) -> tuple[str, dict[str, Any]]:
-    """Conservatively smooth shallow corners in closed line-only paths."""
+    """
+    Adaptively smooth shallow corners using cubic Bézier curves.
+
+    Features:
+    - Angle-dependent Bézier control handles.
+    - Adaptive corner trimming.
+    - Protection against overlapping trims on short edges.
+    - Preservation of sharp corners and shared edges.
+    - Preservation of existing SVG attributes.
+    """
+
     if not (
         0 < min_turn_degrees
         < max_turn_degrees
@@ -576,6 +585,7 @@ def refine_bezier_paths(
     path_index = 0
 
     for element in root.iter():
+
         if not isinstance(element.tag, str):
             continue
 
@@ -663,14 +673,19 @@ def refine_bezier_paths(
                 for segment in path
             ]
 
-            if len(points) < 3:
+            count = len(points)
+
+            if count < 3:
                 skipped_paths += 1
                 continue
 
-            count = len(points)
-            corners = []
+            # Step 1: Analyse corners and calculate adaptive trims.
+
+            corners = [None] * count
+            corner_trims = [0.0] * count
 
             for index in range(count):
+
                 previous = points[(index - 1) % count]
                 current = points[index]
                 following = points[(index + 1) % count]
@@ -685,7 +700,6 @@ def refine_bezier_paths(
                     incoming_length < 1e-6
                     or outgoing_length < 1e-6
                 ):
-                    corners.append(None)
                     continue
 
                 incoming_unit = incoming / incoming_length
@@ -698,37 +712,120 @@ def refine_bezier_paths(
 
                 dot = max(-1.0, min(1.0, dot))
 
-                turn = float(
+                turn_degrees = float(
                     np.degrees(np.arccos(dot))
                 )
 
-                if (
-                    turn < min_turn_degrees
-                    or turn > max_turn_degrees
+                if not (
+                    min_turn_degrees
+                    <= turn_degrees
+                    <= max_turn_degrees
                 ):
-                    corners.append(None)
                     continue
 
                 trim = min(
-                    incoming_length * trim_ratio,
-                    outgoing_length * trim_ratio,
-                )
+                    incoming_length,
+                    outgoing_length,
+                ) * trim_ratio
 
                 if trim < 0.5:
-                    corners.append(None)
+                    continue
+
+                corners[index] = {
+                    "incoming": incoming_unit,
+                    "outgoing": outgoing_unit,
+                    "angle": float(
+                        np.radians(turn_degrees)
+                    ),
+                }
+
+                corner_trims[index] = trim
+
+            # Step 2: Prevent neighbouring curves from overlapping.
+
+            for index in range(count):
+
+                next_index = (index + 1) % count
+
+                edge_length = abs(
+                    points[next_index] - points[index]
+                )
+
+                if edge_length < 1e-9:
+                    continue
+
+                combined_trim = (
+                    corner_trims[index]
+                    + corner_trims[next_index]
+                )
+
+                maximum_trim = edge_length * 0.8
+
+                if combined_trim > maximum_trim:
+
+                    scale = (
+                        maximum_trim / combined_trim
+                    )
+
+                    corner_trims[index] *= scale
+                    corner_trims[next_index] *= scale
+
+            # Step 3: Build adaptive cubic Bézier curves.
+
+            for index in range(count):
+
+                if corners[index] is None:
+                    continue
+
+                trim = corner_trims[index]
+
+                if trim < 0.5:
+                    corners[index] = None
+                    continue
+
+                current = points[index]
+
+                incoming_unit = corners[index]["incoming"]
+                outgoing_unit = corners[index]["outgoing"]
+                angle = corners[index]["angle"]
+
+                half_angle = angle / 2.0
+                quarter_angle = angle / 4.0
+
+                denominator = np.tan(half_angle)
+
+                if abs(denominator) < 1e-9:
+                    corners[index] = None
+                    continue
+
+                handle = (
+                    (4.0 / 3.0)
+                    * trim
+                    * np.tan(quarter_angle)
+                    / denominator
+                )
+
+                if not np.isfinite(handle) or handle <= 0:
+                    corners[index] = None
                     continue
 
                 start = current - incoming_unit * trim
                 end = current + outgoing_unit * trim
 
-                handle = trim * 0.55
-
-                control1 = start + incoming_unit * handle
-                control2 = end - outgoing_unit * handle
-
-                corners.append(
-                    (start, end, control1, control2)
+                control1 = (
+                    start + incoming_unit * handle
                 )
+
+                control2 = (
+                    end - outgoing_unit * handle
+                )
+
+                corners[index] = {
+                    "start": start,
+                    "end": end,
+                    "control1": control1,
+                    "control2": control2,
+                }
 
             corner_count = sum(
                 corner is not None
@@ -739,35 +836,55 @@ def refine_bezier_paths(
                 skipped_paths += 1
                 continue
 
+            # Step 4: Reconstruct the closed SVG path.
+
             new_segments = []
 
             first_corner = corners[0]
 
             if first_corner is not None:
-                current_position = first_corner[1]
+                current_position = first_corner["end"]
             else:
                 current_position = points[0]
 
             for step in range(count):
+
                 index = (step + 1) % count
                 corner = corners[index]
 
                 if corner is None:
+
                     target = points[index]
 
-                    if abs(target - current_position) > 1e-8:
+                    if abs(
+                        target - current_position
+                    ) > 1e-8:
+
                         new_segments.append(
-                            Line(current_position, target)
+                            Line(
+                                current_position,
+                                target,
+                            )
                         )
 
                     current_position = target
                     continue
 
-                start, end, control1, control2 = corner
+                start = corner["start"]
+                end = corner["end"]
 
-                if abs(start - current_position) > 1e-8:
+                control1 = corner["control1"]
+                control2 = corner["control2"]
+
+                if abs(
+                    start - current_position
+                ) > 1e-8:
+
                     new_segments.append(
-                        Line(current_position, start)
+                        Line(
+                            current_position,
+                            start,
+                        )
                     )
 
                 new_segments.append(
@@ -791,15 +908,18 @@ def refine_bezier_paths(
                 skipped_paths += 1
                 continue
 
+            # Only modify the path geometry.
             element.set("d", refined_path.d())
 
             refined_paths += 1
             refined_corners += corner_count
 
         except Exception:
+
             skipped_paths += 1
+
             logger.exception(
-                "Bézier refinement skipped a path."
+                "Adaptive Bézier refinement skipped a path."
             )
 
     result = etree.tostring(
@@ -818,5 +938,5 @@ def refine_bezier_paths(
         "invalid_geometry_paths": invalid_geometry_paths,
         "shared_edge_paths": len(protected_paths),
         "protected_shared_edge_paths": protected_path_count,
-        "method": "conservative_shared_edge_protected_smoothing",
-    }
+        "method": "adaptive_angle_based_shared_edge_protected_smoothing",
+        }
