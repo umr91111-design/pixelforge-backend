@@ -447,6 +447,11 @@ async def trace_image(
 ):
     try:
         # STEP 1: Validate the selected tracing preset.
+        # When trace_image() is called directly in unit tests, FastAPI's
+        # Form(...) default can be a Form object rather than a string.
+        if not isinstance(preset, str):
+            preset = DEFAULT_PRESET
+
         try:
             preset_settings = get_tracing_preset(preset)
             selected_preset = preset.strip().lower()
@@ -462,11 +467,10 @@ async def trace_image(
 
         # STEP 2: Use the preset's recommended mode unless
         # the client explicitly supplies a mode.
-        requested_mode = (
-            mode
-            if mode is not None
-            else preset_settings["recommended_mode"]
-        )
+        if not isinstance(mode, str) or not mode.strip():
+            requested_mode = preset_settings["recommended_mode"]
+        else:
+            requested_mode = mode
 
         selected_mode = MODE_ALIASES.get(
             requested_mode.strip().lower()
