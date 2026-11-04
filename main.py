@@ -65,9 +65,10 @@ app = FastAPI(
         "PixelForge hybrid image vectorization API. "
         "Uses adaptive image preprocessing, VTracer, "
         "OpenCV shape recognition, CPU-based image and "
-        "SVG analysis, and conservative Bézier refinement."
+        "SVG analysis, topology diagnostics, and "
+        "conservative Bézier refinement."
     ),
-    version="1.4.0",
+    version="1.5.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -189,10 +190,14 @@ async def health():
             "bezier_refinement_scope": (
                 "conservative closed line-only paths"
             ),
+            "topology_analysis": True,
+            "topology_analysis_scope": (
+                "closed line-only paths without SVG transforms"
+            ),
+            "topology_automatic_repair": False,
+            "shared_boundary_repair": False,
             "deep_learning_model": False,
             "gpu_required": False,
-            "topology_aware_graph_optimizer": False,
-            "shared_boundary_repair": False,
             "openapi": "/openapi.json",
         },
     }
@@ -237,6 +242,20 @@ async def features():
             "xml_parser": "lxml",
             "path_inspection": "svgpathtools",
             "changes_svg_geometry": True,
+        },
+        "topology_analysis": {
+            "enabled": True,
+            "engine": "Shapely",
+            "detects": [
+                "overlapping polygons",
+                "shared boundaries",
+                "nearby gaps",
+            ],
+            "scope": (
+                "closed line-only paths without SVG transforms"
+            ),
+            "analysis_only": True,
+            "automatic_repair": False,
         },
         "geometry_refinement": {
             "bezier_path_refinement": True,
@@ -435,6 +454,16 @@ async def trace_image(
         detected_shapes = []
         analysis_completed = False
 
+        topology_stats = {
+            "valid_polygons": 0,
+            "overlaps_found": 0,
+            "shared_boundaries_found": 0,
+            "nearby_gaps_found": 0,
+            "skipped_paths": 0,
+        }
+
+        topology_status = "disabled"
+
         bezier_stats = {
             "refined_paths": 0,
             "refined_corners": 0,
@@ -443,7 +472,7 @@ async def trace_image(
 
         bezier_status = "disabled"
 
-        # The original upload is retained for diagnostics and shape detection.
+        # Retain the original upload for diagnostics and shape detection.
         vectorizer_data = data
         vectorizer_format = image_format
 
@@ -607,7 +636,7 @@ async def trace_image(
 
                     svg_text = original_svg
 
-            # STEP 6: Run integrated CPU analysis.
+            # STEP 6: Run integrated CPU and topology analysis.
             if refine_geometry:
                 try:
                     analysis = await asyncio.to_thread(
@@ -619,24 +648,48 @@ async def trace_image(
                     segmentation = analysis.get("segmentation", {})
                     geometry = analysis.get("geometry", {})
                     svg_analysis = analysis.get("svg", {})
+                    topology = analysis.get("topology", {})
+
+                    if isinstance(topology, dict) and topology:
+                        topology_stats = {
+                            "valid_polygons": int(
+                                topology.get("valid_polygons", 0)
+                            ),
+                            "overlaps_found": int(
+                                topology.get("overlaps_found", 0)
+                            ),
+                            "shared_boundaries_found": int(
+                                topology.get("shared_boundaries_found", 0)
+                            ),
+                            "nearby_gaps_found": int(
+                                topology.get("nearby_gaps_found", 0)
+                            ),
+                            "skipped_paths": int(
+                                topology.get("skipped_paths", 0)
+                            ),
+                        }
+                        topology_status = "completed"
+                    else:
+                        topology_status = "unavailable"
 
                     logger.info(
                         (
                             "Pipeline analysis completed: "
-                            "segmentation=%s geometry=%s svg=%s"
+                            "segmentation=%s geometry=%s svg=%s topology=%s"
                         ),
                         segmentation,
                         geometry,
                         svg_analysis,
+                        topology_stats,
                     )
 
                     analysis_completed = True
 
                 except Exception:
                     logger.exception(
-                        "Pipeline analysis failed; "
-                        "retaining the generated SVG."
+                        "Pipeline analysis failed; retaining the generated SVG."
                     )
+                    topology_status = "failed"
 
             # STEP 7: Apply conservative Bézier refinement.
             if refine_geometry:
@@ -701,13 +754,14 @@ async def trace_image(
                 (
                     "Vectorization completed: output=%s bytes "
                     "shapes=%s preprocessing=%s analysis=%s "
-                    "bezier=%s refined_paths=%s "
+                    "topology=%s bezier=%s refined_paths=%s "
                     "refined_corners=%s elapsed=%ss"
                 ),
                 len(final_svg),
                 len(detected_shapes),
                 preprocessing_status,
                 analysis_completed,
+                topology_status,
                 bezier_status,
                 bezier_stats["refined_paths"],
                 bezier_stats["refined_corners"],
@@ -741,6 +795,22 @@ async def trace_image(
                     ),
                     "X-PixelForge-Deep-Learning": "not-configured",
                     "X-PixelForge-CPU-Analysis": analysis_status,
+                    "X-PixelForge-Topology-Analysis": topology_status,
+                    "X-PixelForge-Topology-Polygons": str(
+                        topology_stats["valid_polygons"]
+                    ),
+                    "X-PixelForge-Topology-Overlaps": str(
+                        topology_stats["overlaps_found"]
+                    ),
+                    "X-PixelForge-Topology-Shared-Boundaries": str(
+                        topology_stats["shared_boundaries_found"]
+                    ),
+                    "X-PixelForge-Topology-Gaps": str(
+                        topology_stats["nearby_gaps_found"]
+                    ),
+                    "X-PixelForge-Topology-Skipped-Paths": str(
+                        topology_stats["skipped_paths"]
+                    ),
                     "X-PixelForge-Bezier-Refinement": bezier_status,
                     "X-PixelForge-Bezier-Paths": str(
                         bezier_stats["refined_paths"]
