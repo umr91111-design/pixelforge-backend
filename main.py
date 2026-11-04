@@ -19,7 +19,11 @@ from vectorizer_pipeline import (
     refine_bezier_paths,
     run_vectorizer_analysis,
 )
-
+from tracing_presets import (
+    DEFAULT_PRESET,
+    get_tracing_preset,
+    list_tracing_presets,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pixelforge")
