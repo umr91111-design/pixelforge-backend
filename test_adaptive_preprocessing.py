@@ -5,7 +5,11 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from adaptive_preprocessing import adaptive_color_preprocess
+from adaptive_preprocessing import (
+    MAX_SAMPLE_PIXELS,
+    _build_sample,
+    adaptive_color_preprocess,
+)
 
 
 def encode_image(image):
@@ -56,6 +60,7 @@ class TestAdaptivePreprocessing(unittest.TestCase):
 
         self.assertEqual(report["width"], 64)
         self.assertEqual(report["height"], 64)
+        self.assertTrue(report["alpha_preserved"])
 
     def test_color_count_is_limited(self):
         data, report = adaptive_color_preprocess(
@@ -75,7 +80,7 @@ class TestAdaptivePreprocessing(unittest.TestCase):
         self.assertLessEqual(report["colors_used"], 2)
 
     def test_transparency_is_preserved(self):
-        data, _ = adaptive_color_preprocess(
+        data, report = adaptive_color_preprocess(
             make_test_image("RGBA"),
             colors=4,
         )
@@ -85,6 +90,55 @@ class TestAdaptivePreprocessing(unittest.TestCase):
 
         self.assertTrue(np.all(result[:, 32:, 3] == 0))
         self.assertTrue(np.all(result[:, :32, 3] == 255))
+        self.assertTrue(report["alpha_preserved"])
+
+    def test_partial_alpha_is_preserved(self):
+        image = Image.new(
+            "RGBA",
+            (32, 32),
+            (120, 80, 40, 128),
+        )
+
+        data, _ = adaptive_color_preprocess(
+            encode_image(image),
+            colors=2,
+        )
+
+        with Image.open(io.BytesIO(data)) as output:
+            result = np.asarray(output.convert("RGBA"))
+
+        self.assertTrue(
+            np.all(result[:, :, 3] == 128)
+        )
+
+    def test_transparent_pixel_rgb_is_not_modified(self):
+        image = Image.new(
+            "RGBA",
+            (32, 32),
+            (0, 0, 0, 0),
+        )
+
+        pixels = image.load()
+
+        for y in range(32):
+            for x in range(16):
+                pixels[x, y] = (255, 0, 0, 255)
+
+        data, _ = adaptive_color_preprocess(
+            encode_image(image),
+            colors=2,
+        )
+
+        with Image.open(io.BytesIO(data)) as output:
+            result = np.asarray(output.convert("RGBA"))
+
+        self.assertTrue(
+            np.all(result[:, 16:, 3] == 0)
+        )
+
+        self.assertTrue(
+            np.all(result[:, 16:, :3] == 0)
+        )
 
     def test_all_transparent_image(self):
         image = Image.new(
@@ -144,7 +198,6 @@ class TestAdaptivePreprocessing(unittest.TestCase):
 
     def test_small_detail_is_preserved(self):
         image = Image.new("RGB", (64, 64), "white")
-
         pixels = image.load()
 
         for y in range(28, 36):
@@ -170,6 +223,73 @@ class TestAdaptivePreprocessing(unittest.TestCase):
             100,
         )
 
+    def test_sampling_respects_maximum(self):
+        visible_lab = np.arange(
+            90_000,
+            dtype=np.uint8,
+        ).reshape(30_000, 3)
+
+        edge_mask = np.zeros(30_000, dtype=bool)
+        edge_mask[::10] = True
+
+        samples = _build_sample(
+            visible_lab,
+            edge_mask,
+            10_000,
+        )
+
+        self.assertLessEqual(
+            len(samples),
+            10_000,
+        )
+
+    def test_sampling_includes_edge_pixels(self):
+        visible_lab = np.arange(
+            90_000,
+            dtype=np.uint8,
+        ).reshape(30_000, 3)
+
+        edge_mask = np.zeros(30_000, dtype=bool)
+        edge_mask[100:200] = True
+
+        samples = _build_sample(
+            visible_lab,
+            edge_mask,
+            300,
+        )
+
+        self.assertGreater(len(samples), 0)
+
+        self.assertTrue(
+            any(
+                np.array_equal(sample, visible_lab[100])
+                for sample in samples
+            )
+        )
+
+    def test_sampling_is_deterministic(self):
+        visible_lab = np.arange(
+            90_000,
+            dtype=np.uint8,
+        ).reshape(30_000, 3)
+
+        edge_mask = np.zeros(30_000, dtype=bool)
+        edge_mask[::5] = True
+
+        first = _build_sample(
+            visible_lab,
+            edge_mask,
+            10_000,
+        )
+
+        second = _build_sample(
+            visible_lab,
+            edge_mask,
+            10_000,
+        )
+
+        np.testing.assert_array_equal(first, second)
+
     def test_processing_is_deterministic(self):
         source = make_test_image()
 
@@ -194,18 +314,22 @@ class TestAdaptivePreprocessing(unittest.TestCase):
             )
 
     def test_invalid_color_count(self):
-        with self.assertRaises(ValueError):
-            adaptive_color_preprocess(
-                make_test_image(),
-                colors=1,
-            )
+        for value in (1, 17, True, 2.5):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    adaptive_color_preprocess(
+                        make_test_image(),
+                        colors=value,
+                    )
 
     def test_invalid_smoothing(self):
-        with self.assertRaises(ValueError):
-            adaptive_color_preprocess(
-                make_test_image(),
-                smoothing=4,
-            )
+        for value in (4, -1, True, 2.5):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    adaptive_color_preprocess(
+                        make_test_image(),
+                        smoothing=value,
+                    )
 
     def test_invalid_image_bytes(self):
         with self.assertRaises(ValueError):
@@ -214,6 +338,16 @@ class TestAdaptivePreprocessing(unittest.TestCase):
     def test_empty_image_bytes(self):
         with self.assertRaises(ValueError):
             adaptive_color_preprocess(b"")
+
+    def test_non_bytes_input(self):
+        with self.assertRaises(ValueError):
+            adaptive_color_preprocess("not bytes")
+
+    def test_upload_size_limit(self):
+        oversized = b"x" * (5 * 1024 * 1024 + 1)
+
+        with self.assertRaises(ValueError):
+            adaptive_color_preprocess(oversized)
 
 
 if __name__ == "__main__":
